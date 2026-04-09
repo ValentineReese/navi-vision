@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\AI\navi-vision\build3\CMakeFiles\988a9dce2d088e3f6ec6f67bcb2b294b\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{6EA65C3F-92DD-37BA-AC28-24705C9DB3C6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

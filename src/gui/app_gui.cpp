@@ -7,12 +7,14 @@ namespace navi {
 //  构造 / 析构
 // ============================================================
 
-AppGui::AppGui(std::shared_ptr<WgcCapture>  capture,
-               std::shared_ptr<FrameBuffer> buffer,
-               ID3D11Device*               device,
-               ID3D11DeviceContext*         context)
+AppGui::AppGui(std::shared_ptr<WgcCapture>       capture,
+               std::shared_ptr<FrameBuffer>    buffer,
+               std::shared_ptr<IInferenceEngine> engine,
+               ID3D11Device*                  device,
+               ID3D11DeviceContext*           context)
     : capture_(std::move(capture))
     , buffer_(std::move(buffer))
+    , engine_(std::move(engine))
     , device_(device)
     , context_(context) {
 }
@@ -30,6 +32,7 @@ void AppGui::render() {
     renderControlPanel();
     if (visionActive_) {
         renderPreview();
+        renderAIPanel();
     }
 }
 
@@ -242,6 +245,85 @@ void AppGui::updatePreviewTexture() {
     }
 
     context_->Unmap(previewTexture_.Get(), 0);
+}
+
+// ============================================================
+//  AI Analysis Panel
+//
+//  Periodically invokes the inference engine on the latest frame
+//  and renders the structured AI response in a dedicated window.
+// ============================================================
+
+void AppGui::renderAIPanel() {
+    // Throttle: only run inference every analysisIntervalSec_ seconds
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<float>(now - lastAnalysisTime_).count();
+
+    if (engine_ && elapsed >= analysisIntervalSec_) {
+        auto frame = buffer_->read();
+        if (frame && !frame->pixels.empty()) {
+            // Call mock (or real) inference engine
+            std::string raw = engine_->analyze_frame(
+                frame->pixels, frame->width, frame->height, "");
+
+            // Parse with sanitization + fallback safety
+            lastAIResult_ = parse_ai_response(raw);
+            lastAnalysisTime_ = now;
+        }
+    }
+
+    // Render the AI result panel
+    ImGui::SetNextWindowPos(ImVec2(440, 120), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360, 300), ImGuiCond_FirstUseEver);
+    ImGui::Begin("AI Analysis", nullptr, ImGuiWindowFlags_NoCollapse);
+
+    if (engine_) {
+        ImGui::TextDisabled("Engine: %s", engine_->engine_name().c_str());
+    }
+    ImGui::Separator();
+
+    // Fallback indicator
+    if (lastAIResult_.is_fallback) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                           "[Fallback] No valid AI response yet");
+    }
+
+    // Status with color coding
+    ImVec4 statusColor(0.6f, 0.6f, 0.6f, 1.0f);
+    if (lastAIResult_.current_status == "safe")
+        statusColor = ImVec4(0.3f, 1.0f, 0.3f, 1.0f);
+    else if (lastAIResult_.current_status == "combat")
+        statusColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+    else if (lastAIResult_.current_status == "retreating")
+        statusColor = ImVec4(1.0f, 1.0f, 0.3f, 1.0f);
+
+    ImGui::TextColored(statusColor, "Status: %s",
+                       lastAIResult_.current_status.c_str());
+
+    // Confidence bar
+    ImGui::Text("Confidence:");
+    ImGui::SameLine();
+    ImGui::ProgressBar(lastAIResult_.confidence, ImVec2(150, 16));
+
+    ImGui::Separator();
+
+    // Detected units
+    ImGui::Text("Detected Units:");
+    if (lastAIResult_.detected_units.empty()) {
+        ImGui::TextDisabled("  (none)");
+    } else {
+        for (const auto& unit : lastAIResult_.detected_units) {
+            ImGui::BulletText("%s", unit.c_str());
+        }
+    }
+
+    ImGui::Separator();
+
+    // Tactical advice
+    ImGui::Text("Tactical Advice:");
+    ImGui::TextWrapped("%s", lastAIResult_.tactical_advice.c_str());
+
+    ImGui::End();
 }
 
 // ============================================================

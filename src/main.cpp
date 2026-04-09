@@ -28,6 +28,7 @@
 
 #include "core/frame_buffer.h"
 #include "capture/wgc_capture.h"
+#include "inference/inference_engine.h"
 #include "gui/app_gui.h"
 
 #pragma comment(lib, "d3d11.lib")
@@ -132,7 +133,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // ── 创建核心模块 ──
     auto frameBuffer = std::make_shared<navi::FrameBuffer>();
     auto capture     = std::make_shared<navi::WgcCapture>(frameBuffer);
-    navi::AppGui gui(capture, frameBuffer, g_pd3dDevice, g_pd3dDeviceContext);
+    auto inference   = std::make_shared<navi::MockInference>();
+    navi::AppGui gui(capture, frameBuffer, inference, g_pd3dDevice, g_pd3dDeviceContext);
 
     // ── 主渲染循环 ──
     const float clearColor[] = { 0.06f, 0.06f, 0.10f, 1.00f };

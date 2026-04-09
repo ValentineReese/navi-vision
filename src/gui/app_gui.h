@@ -10,8 +10,11 @@
 #include <imgui.h>
 
 #include "../core/frame_buffer.h"
+#include "../core/game_state.h"
+#include "../core/response_parser.h"
 #include "../capture/wgc_capture.h"
 #include "../capture/window_enumerator.h"
+#include "../inference/inference_engine.h"
 
 namespace navi {
 
@@ -25,10 +28,11 @@ namespace navi {
 /// - 状态信息显示
 class AppGui {
 public:
-    AppGui(std::shared_ptr<WgcCapture>  capture,
-           std::shared_ptr<FrameBuffer> buffer,
-           ID3D11Device*               device,
-           ID3D11DeviceContext*         context);
+    AppGui(std::shared_ptr<WgcCapture>       capture,
+           std::shared_ptr<FrameBuffer>    buffer,
+           std::shared_ptr<IInferenceEngine> engine,
+           ID3D11Device*                  device,
+           ID3D11DeviceContext*           context);
     ~AppGui();
 
     /// 每帧调用，渲染整个 GUI
@@ -39,6 +43,7 @@ private:
     void renderControlPanel();
     void renderWindowSelector();
     void renderPreview();
+    void renderAIPanel();
     void renderStatusBar();
 
     // ── 眼睛/话筒的自定义图标绘制 ──
@@ -52,10 +57,11 @@ private:
     static std::string wstringToUtf8(const std::wstring& wstr);
 
     // ── 核心模块引用 ──
-    std::shared_ptr<WgcCapture>  capture_;
-    std::shared_ptr<FrameBuffer> buffer_;
-    ID3D11Device*                device_;
-    ID3D11DeviceContext*         context_;
+    std::shared_ptr<WgcCapture>       capture_;
+    std::shared_ptr<FrameBuffer>    buffer_;
+    std::shared_ptr<IInferenceEngine> engine_;
+    ID3D11Device*                  device_;
+    ID3D11DeviceContext*           context_;
 
     // ── 界面状态 ──
     bool visionActive_       = false;
@@ -71,6 +77,11 @@ private:
     int previewWidth_  = 0;
     int previewHeight_ = 0;
     std::chrono::steady_clock::time_point lastPreviewTimestamp_;
+
+    // ── AI analysis state ──
+    GameStateData lastAIResult_;
+    std::chrono::steady_clock::time_point lastAnalysisTime_;
+    float analysisIntervalSec_ = 2.0f;  // Run mock inference every N seconds
 };
 
 } // namespace navi
