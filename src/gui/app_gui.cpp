@@ -1,0 +1,297 @@
+#include "app_gui.h"
+#include <cstdio>
+
+namespace navi {
+
+// ============================================================
+//  构造 / 析构
+// ============================================================
+
+AppGui::AppGui(std::shared_ptr<WgcCapture>  capture,
+               std::shared_ptr<FrameBuffer> buffer,
+               ID3D11Device*               device,
+               ID3D11DeviceContext*         context)
+    : capture_(std::move(capture))
+    , buffer_(std::move(buffer))
+    , device_(device)
+    , context_(context) {
+}
+
+AppGui::~AppGui() {
+    previewSRV_.Reset();
+    previewTexture_.Reset();
+}
+
+// ============================================================
+//  主渲染入口
+// ============================================================
+
+void AppGui::render() {
+    renderControlPanel();
+    if (visionActive_) {
+        renderPreview();
+    }
+}
+
+// ============================================================
+//  控制面板
+// ============================================================
+
+void AppGui::renderControlPanel() {
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+    ImGui::Begin("NaviVision Control",
+                 nullptr,
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
+
+    ImGui::Text("NaviVision");
+    ImGui::SameLine();
+    ImGui::TextDisabled("v0.1");
+    ImGui::Separator();
+
+    // ── "眼睛"按钮 ──
+    ImVec2 btnSize(160, 45);
+
+    if (visionActive_) {
+        // 绿色 —— 正在捕获
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.65f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.75f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.55f, 0.10f, 1.0f));
+        if (ImGui::Button("(O) Vision ON", btnSize)) {
+            capture_->stop();
+            visionActive_ = false;
+            buffer_->clear();
+        }
+        ImGui::PopStyleColor(3);
+    } else {
+        // 灰色 —— 未捕获
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.35f, 0.35f, 0.38f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.45f, 0.45f, 0.48f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.28f, 0.28f, 0.30f, 1.0f));
+        if (ImGui::Button("(-) Vision OFF", btnSize)) {
+            // 点击后弹出窗口选择列表
+            windowList_        = WindowEnumerator::enumerate();
+            showWindowSelector_ = true;
+            ImGui::OpenPopup("SelectWindow");
+        }
+        ImGui::PopStyleColor(3);
+    }
+
+    ImGui::SameLine();
+
+    // ── "话筒"按钮（占位） ──
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.35f, 0.35f, 0.38f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.45f, 0.45f, 0.48f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.28f, 0.28f, 0.30f, 1.0f));
+    ImGui::Button("[x] Mic OFF", btnSize);
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Voice module - coming soon");
+    }
+
+    // ── 状态栏 ──
+    renderStatusBar();
+
+    // 窗口选择弹窗必须在同一个 ImGui 窗口的 ID 栈内渲染
+    renderWindowSelector();
+
+    ImGui::End();
+}
+
+// ============================================================
+//  窗口选择弹窗
+// ============================================================
+
+void AppGui::renderWindowSelector() {
+    if (!showWindowSelector_)
+        return;
+
+    // 居中弹窗
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("SelectWindow", &showWindowSelector_,
+                                ImGuiWindowFlags_NoResize)) {
+        ImGui::Text("Select a window to capture:");
+        ImGui::Separator();
+
+        // 刷新按钮
+        if (ImGui::Button("Refresh")) {
+            windowList_ = WindowEnumerator::enumerate();
+        }
+        ImGui::Separator();
+
+        // 窗口列表（可滚动）
+        ImGui::BeginChild("WindowList", ImVec2(0, -30), true);
+        for (size_t i = 0; i < windowList_.size(); i++) {
+            std::string label = wstringToUtf8(windowList_[i].title);
+            // 添加序号防止 ImGui ID 冲突
+            char id[512];
+            snprintf(id, sizeof(id), "%s##%zu", label.c_str(), i);
+
+            if (ImGui::Selectable(id)) {
+                // 用户选中了目标窗口，启动捕获
+                if (capture_->start(windowList_[i].hwnd, 3.0f)) {
+                    visionActive_ = true;
+                }
+                showWindowSelector_ = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            showWindowSelector_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+// ============================================================
+//  画面预览
+// ============================================================
+
+void AppGui::renderPreview() {
+    updatePreviewTexture();
+
+    if (!previewSRV_)
+        return;
+
+    ImGui::SetNextWindowPos(ImVec2(10, 120), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 300), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Preview", nullptr, ImGuiWindowFlags_NoCollapse);
+
+    // 计算保持宽高比的预览尺寸
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    float aspect = (previewHeight_ > 0)
+                       ? static_cast<float>(previewWidth_) / previewHeight_
+                       : 16.0f / 9.0f;
+
+    float dispW = avail.x;
+    float dispH = dispW / aspect;
+    if (dispH > avail.y) {
+        dispH = avail.y;
+        dispW = dispH * aspect;
+    }
+
+    ImGui::Image(static_cast<ImTextureID>(previewSRV_.Get()),
+                 ImVec2(dispW, dispH));
+
+    ImGui::End();
+}
+
+void AppGui::updatePreviewTexture() {
+    auto frame = buffer_->read();
+    if (!frame)
+        return;
+
+    // 如果时间戳未变化，说明帧没有更新，跳过
+    if (frame->timestamp == lastPreviewTimestamp_)
+        return;
+    lastPreviewTimestamp_ = frame->timestamp;
+
+    // 如果帧尺寸变化，需重建纹理
+    if (frame->width != previewWidth_ || frame->height != previewHeight_) {
+        previewSRV_.Reset();
+        previewTexture_.Reset();
+
+        D3D11_TEXTURE2D_DESC texDesc = {};
+        texDesc.Width            = frame->width;
+        texDesc.Height           = frame->height;
+        texDesc.MipLevels        = 1;
+        texDesc.ArraySize        = 1;
+        texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Usage            = D3D11_USAGE_DYNAMIC;
+        texDesc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+        texDesc.CPUAccessFlags   = D3D11_CPU_ACCESS_WRITE;
+
+        HRESULT hr = device_->CreateTexture2D(
+            &texDesc, nullptr, previewTexture_.GetAddressOf());
+        if (FAILED(hr)) return;
+
+        hr = device_->CreateShaderResourceView(
+            previewTexture_.Get(), nullptr, previewSRV_.GetAddressOf());
+        if (FAILED(hr)) return;
+
+        previewWidth_  = frame->width;
+        previewHeight_ = frame->height;
+    }
+
+    // 将 BGR 像素数据上传到 RGBA 纹理
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = context_->Map(
+        previewTexture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr)) return;
+
+    const uint8_t* src = frame->pixels.data();
+    uint8_t*       dst = static_cast<uint8_t*>(mapped.pData);
+
+    for (int y = 0; y < frame->height; y++) {
+        const uint8_t* srcRow = src + y * frame->width * 3;
+        uint8_t*       dstRow = dst + y * mapped.RowPitch;
+        for (int x = 0; x < frame->width; x++) {
+            // BGR → RGBA
+            dstRow[x * 4 + 0] = srcRow[x * 3 + 2]; // R ← BGR[2]
+            dstRow[x * 4 + 1] = srcRow[x * 3 + 1]; // G ← BGR[1]
+            dstRow[x * 4 + 2] = srcRow[x * 3 + 0]; // B ← BGR[0]
+            dstRow[x * 4 + 3] = 255;                // A = 不透明
+        }
+    }
+
+    context_->Unmap(previewTexture_.Get(), 0);
+}
+
+// ============================================================
+//  状态栏
+// ============================================================
+
+void AppGui::renderStatusBar() {
+    ImGui::Separator();
+
+    if (visionActive_ && capture_->isCapturing()) {
+        auto frame = buffer_->read();
+        if (frame) {
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Capturing");
+            ImGui::SameLine();
+            ImGui::Text("| %dx%d", frame->width, frame->height);
+            ImGui::SameLine();
+            auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - frame->timestamp);
+            ImGui::Text("| Frame age: %lld ms", static_cast<long long>(age.count()));
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f),
+                               "Capturing (waiting for first frame...)");
+        }
+    } else {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Idle");
+        // 显示上次错误（如果有）
+        std::string err = capture_->lastError();
+        if (!err.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                               "Error: %s", err.c_str());
+        }
+    }
+}
+
+// ============================================================
+//  工具函数
+// ============================================================
+
+std::string AppGui::wstringToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+    int size = WideCharToMultiByte(
+        CP_UTF8, 0,
+        wstr.c_str(), static_cast<int>(wstr.size()),
+        nullptr, 0, nullptr, nullptr);
+    std::string result(size, '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0,
+        wstr.c_str(), static_cast<int>(wstr.size()),
+        result.data(), size, nullptr, nullptr);
+    return result;
+}
+
+} // namespace navi

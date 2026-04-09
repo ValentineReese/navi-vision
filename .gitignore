@@ -1,0 +1,47 @@
+# Build directories
+build/
+build2/
+out/
+cmake-build-*/
+
+# MSVC generated
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp
+*.iobj
+*.ipdb
+*.log
+*.tlog
+*.lastbuildstate
+*.manifest
+*.res
+*.idb
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.cachefile
+x64/
+Debug/
+Release/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CMakeSettings.json
+
+# vcpkg local installs
+vcpkg_installed/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
