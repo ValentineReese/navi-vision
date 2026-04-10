@@ -1,5 +1,6 @@
 #include "app_gui.h"
 #include "../inference/vlm_engine.h"
+#include "../core/log_buffer.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -31,6 +32,9 @@ AppGui::AppGui(std::shared_ptr<WgcCapture>       capture,
 
     // 加载游戏配置文件
     profileManager_.scanDirectory(ProfileManager::getProfilesDir());
+    NAVI_LOG("[App] NaviVision started");
+    NAVI_LOG("[App] Profiles dir: %s", ProfileManager::getProfilesDir().c_str());
+    NAVI_LOG("[App] Loaded %d game profile(s)", profileManager_.count());
     if (profileManager_.count() > 0) {
         applyProfile(0);
     }
@@ -75,6 +79,7 @@ void AppGui::render() {
         renderAIPanel();
     }
     renderModelSettings();
+    renderLogWindow();
 }
 
 // ============================================================
@@ -170,6 +175,12 @@ void AppGui::renderControlPanel() {
             }
             ImGui::EndCombo();
         }
+    }
+
+    // ── 日志按钮 ──
+    ImGui::Separator();
+    if (ImGui::Button(showLogWindow_ ? "Hide Log" : "Show Log", ImVec2(-1, 28))) {
+        showLogWindow_ = !showLogWindow_;
     }
 
     // 窗口选择弹窗必须在同一个 ImGui 窗口的 ID 栈内渲染
@@ -506,12 +517,69 @@ void AppGui::applyProfile(int index) {
     if (!prof) return;
 
     selectedProfileIdx_ = index;
+    NAVI_LOG("[Profile] Switched to: %s", prof->name.c_str());
 
     // 将 mock 场景应用到 MockInference（如果当前引擎是 MockInference）
     auto* mock = dynamic_cast<MockInference*>(engine_.get());
     if (mock) {
         mock->setProfile(prof);
     }
+}
+
+// ============================================================
+//  日志窗口
+// ============================================================
+
+void AppGui::renderLogWindow() {
+    if (!showLogWindow_) return;
+
+    ImGui::SetNextWindowPos(ImVec2(10, 430), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(780, 300), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Log", &showLogWindow_)) {
+        ImGui::End();
+        return;
+    }
+
+    // 工具栏
+    if (ImGui::Button("Clear")) {
+        LogBuffer::instance().clear();
+    }
+    ImGui::SameLine();
+    static bool autoScroll = true;
+    ImGui::Checkbox("Auto-scroll", &autoScroll);
+    ImGui::Separator();
+
+    // 日志内容（可滚动区域）
+    ImGui::BeginChild("LogScrollRegion", ImVec2(0, 0), false,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+
+    auto lines = LogBuffer::instance().getLines();
+    for (const auto& line : lines) {
+        // 根据前缀着色
+        ImVec4 color(0.8f, 0.8f, 0.8f, 1.0f);  // 默认灰白
+        if (line.find("!!") != std::string::npos) {
+            color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);   // 错误 = 红
+        } else if (line.find("[VLM]") != std::string::npos) {
+            if (line.find("开始推理") != std::string::npos ||
+                line.find("推理完成") != std::string::npos) {
+                color = ImVec4(0.3f, 1.0f, 0.6f, 1.0f); // 关键步骤 = 绿
+            } else {
+                color = ImVec4(0.6f, 0.8f, 1.0f, 1.0f); // VLM 细节 = 浅蓝
+            }
+        } else if (line.find("[Profile]") != std::string::npos) {
+            color = ImVec4(1.0f, 0.8f, 0.3f, 1.0f);   // Profile = 橙
+        }
+        ImGui::TextColored(color, "%s", line.c_str());
+    }
+
+    // 自动滚动到底部
+    if (autoScroll && LogBuffer::instance().shouldScrollToBottom()) {
+        ImGui::SetScrollHereY(1.0f);
+    }
+
+    ImGui::EndChild();
+    ImGui::End();
 }
 
 // ============================================================
@@ -804,6 +872,9 @@ void AppGui::startModelLoad() {
     if (modelLoadThread_.joinable()) modelLoadThread_.join();
 
     modelLoadThread_ = std::thread([this, modelPath, mmprojPath]() {
+        NAVI_LOG("[Model] Loading model: %s", modelPath.c_str());
+        NAVI_LOG("[Model] Loading mmproj: %s", mmprojPath.c_str());
+
         VlmConfig cfg;
         cfg.model_path   = modelPath;
         cfg.mmproj_path  = mmprojPath;
@@ -812,15 +883,25 @@ void AppGui::startModelLoad() {
         cfg.n_ctx        = 4096;
         cfg.temperature  = 0.1f;
 
+        // 从当前 profile 获取提示词
+        const GameProfile* prof = profileManager_.getProfile(selectedProfileIdx_);
+        if (prof) {
+            cfg.system_prompt = prof->system_prompt;
+            cfg.user_prompt   = prof->user_prompt;
+            NAVI_LOG("[Model] Using prompts from profile: %s", prof->name.c_str());
+        }
+
         auto vlm = std::make_shared<VlmEngine>(cfg);
 
         std::lock_guard<std::mutex> lock(modelLoadMutex_);
         if (vlm->is_loaded()) {
             pendingEngine_ = vlm;
             modelLoadError_.clear();
+            NAVI_LOG("[Model] Model loaded successfully");
         } else {
             pendingEngine_ = nullptr;
             modelLoadError_ = "Load failed: " + vlm->last_error();
+            NAVI_LOG("[Model] !! Load failed: %s", vlm->last_error().c_str());
         }
         modelLoadDone_.store(true);
     });

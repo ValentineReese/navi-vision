@@ -15,6 +15,7 @@
 #include "../core/frame_buffer.h"
 #include "../core/game_state.h"
 #include "../core/game_profile.h"
+#include "../core/log_buffer.h"
 #include "../core/response_parser.h"
 #include "../capture/wgc_capture.h"
 #include "../capture/window_enumerator.h"
@@ -49,6 +50,7 @@ private:
     void renderWindowSelector();
     void renderPreview();
     void renderAIPanel();
+    void renderLogWindow();
     void renderStatusBar();
     void renderModelSettings();
     void startModelDownload();
@@ -134,6 +136,9 @@ private:
     ProfileManager profileManager_;
     int selectedProfileIdx_ = 0;
     void applyProfile(int index);
+
+    // ── Log Window ──
+    bool showLogWindow_ = false;
 };
 
 } // namespace navi

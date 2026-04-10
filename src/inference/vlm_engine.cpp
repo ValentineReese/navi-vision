@@ -5,12 +5,13 @@
 #include <mtmd.h>
 #include <mtmd-helper.h>
 
+#include "../core/log_buffer.h"
+
 #include <cstring>
 #include <algorithm>
 #include <sstream>
 #include <chrono>
 #include <filesystem>
-#include <cstdio>
 
 namespace navi {
 
@@ -108,6 +109,8 @@ bool VlmEngine::loadModels() {
     llama_sampler_chain_add(sampler_, llama_sampler_init_dist(42));
 
     loaded_.store(true);
+    NAVI_LOG("[VLM] Model loaded: gpu_layers=%d ctx=%d threads=%d temp=%.2f",
+             config_.n_gpu_layers, config_.n_ctx, config_.n_threads, config_.temperature);
     return true;
 }
 
@@ -154,23 +157,23 @@ std::string VlmEngine::analyze_frame(
     std::lock_guard<std::mutex> lock(inferenceMutex_);
 
     auto t0 = std::chrono::steady_clock::now();
-    printf("[VLM] ── 开始推理 ── 图像 %dx%d (%.1f MB)\n",
-           width, height, image_data.size() / (1024.0 * 1024.0));
+    NAVI_LOG("[VLM] ── 开始推理 ── 图像 %dx%d (%.1f MB)",
+            width, height, image_data.size() / (1024.0 * 1024.0));
 
     try {
         auto result = doInference(image_data, width, height, voice_text_prompt);
         auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        printf("[VLM] ── 推理完成 ── 总耗时 %.2f s\n", dt);
-        printf("[VLM] 输出 (%zu chars): %.200s%s\n",
-               result.size(), result.c_str(), result.size() > 200 ? "..." : "");
+        NAVI_LOG("[VLM] ── 推理完成 ── 总耗时 %.2f s", dt);
+        NAVI_LOG("[VLM] 输出 (%zu chars): %.200s%s",
+                result.size(), result.c_str(), result.size() > 200 ? "..." : "");
         return result;
     } catch (const std::exception& e) {
         auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        printf("[VLM] !! 推理异常 (%.2f s): %s\n", dt, e.what());
+        NAVI_LOG("[VLM] !! 推理异常 (%.2f s): %s", dt, e.what());
         setError(std::string("推理异常: ") + e.what());
         return makeFallbackJson(e.what());
     } catch (...) {
-        printf("[VLM] !! 推理未知异常\n");
+        NAVI_LOG("[VLM] !! 推理未知异常");
         setError("推理过程发生未知异常");
         return makeFallbackJson("unknown error");
     }
@@ -190,7 +193,7 @@ std::string VlmEngine::doInference(
     auto logStep = [&](const char* label) {
         auto now = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(now - tStep).count();
-        printf("[VLM]   %-30s %8.1f ms\n", label, ms);
+        NAVI_LOG("[VLM]   %-30s %8.1f ms", label, ms);
         tStep = now;
     };
 
@@ -277,7 +280,7 @@ std::string VlmEngine::doInference(
         return makeFallbackJson("mtmd_helper_eval_chunks 失败, code=" + std::to_string(eval_res));
     }
     n_past = new_n_past;
-    printf("[VLM]   prompt tokens (n_past): %d\n", (int)n_past);
+    NAVI_LOG("[VLM]   prompt tokens (n_past): %d", (int)n_past);
     logStep("eval chunks (prefill)");
 
     // ── 6. 自回归生成循环 ──
@@ -331,7 +334,7 @@ std::string VlmEngine::doInference(
     }
 
     llama_batch_free(batch);
-    printf("[VLM]   generated %d tokens\n", gen_count);
+    NAVI_LOG("[VLM]   generated %d tokens", gen_count);
     logStep("token generation (decode)");
 
     if (output.empty()) {
