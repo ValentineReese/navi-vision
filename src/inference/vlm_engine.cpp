@@ -12,8 +12,50 @@
 #include <sstream>
 #include <chrono>
 #include <filesystem>
+#include <cmath>
 
 namespace navi {
+
+// ============================================================
+//  图像缩放 — 双线性插值（BGRA → BGRA）
+// ============================================================
+static std::vector<uint8_t> resizeBGRA(
+    const uint8_t* src, int srcW, int srcH,
+    int dstW, int dstH)
+{
+    std::vector<uint8_t> dst(static_cast<size_t>(dstW) * dstH * 4);
+    const float xRatio = static_cast<float>(srcW) / dstW;
+    const float yRatio = static_cast<float>(srcH) / dstH;
+
+    for (int y = 0; y < dstH; ++y) {
+        const float srcY = y * yRatio;
+        const int   y0   = static_cast<int>(srcY);
+        const int   y1   = (std::min)(y0 + 1, srcH - 1);
+        const float fy   = srcY - y0;
+
+        for (int x = 0; x < dstW; ++x) {
+            const float srcX = x * xRatio;
+            const int   x0   = static_cast<int>(srcX);
+            const int   x1   = (std::min)(x0 + 1, srcW - 1);
+            const float fx   = srcX - x0;
+
+            const uint8_t* p00 = src + (y0 * srcW + x0) * 4;
+            const uint8_t* p10 = src + (y0 * srcW + x1) * 4;
+            const uint8_t* p01 = src + (y1 * srcW + x0) * 4;
+            const uint8_t* p11 = src + (y1 * srcW + x1) * 4;
+
+            uint8_t* out = dst.data() + (y * dstW + x) * 4;
+            for (int c = 0; c < 4; ++c) {
+                float v = p00[c] * (1 - fx) * (1 - fy)
+                        + p10[c] * fx       * (1 - fy)
+                        + p01[c] * (1 - fx) * fy
+                        + p11[c] * fx       * fy;
+                out[c] = static_cast<uint8_t>(v + 0.5f);
+            }
+        }
+    }
+    return dst;
+}
 
 // ============================================================
 //  默认系统提示词（当 GameProfile 未配置时使用）
@@ -157,7 +199,7 @@ std::string VlmEngine::analyze_frame(
     std::lock_guard<std::mutex> lock(inferenceMutex_);
 
     auto t0 = std::chrono::steady_clock::now();
-    NAVI_LOG("[VLM] ── 开始推理 ── 图像 %dx%d (%.1f MB)",
+    NAVI_LOG("[VLM] ── 开始推理 ── 原始图像 %dx%d (%.1f MB)",
             width, height, image_data.size() / (1024.0 * 1024.0));
 
     try {
@@ -203,19 +245,47 @@ std::string VlmEngine::doInference(
     const llama_vocab* vocab = llama_model_get_vocab(model_);
     logStep("KV cache clear");
 
+    // ── 0.5 图像缩放 — 保证 RGB 数据不超过 ~1 MB（约 333K 像素） ──
+    constexpr size_t kMaxRgbBytes = 1024 * 1024;  // 1 MB
+    constexpr size_t kBytesPerPixelRGB = 3;
+    constexpr size_t kMaxPixels = kMaxRgbBytes / kBytesPerPixelRGB;  // ~349525
+
+    int finalW = width;
+    int finalH = height;
+    const uint8_t* pixelPtr = bgra_pixels.data();
+    std::vector<uint8_t> resized;
+
+    size_t totalPixels = static_cast<size_t>(width) * height;
+    if (totalPixels > kMaxPixels) {
+        float scale = std::sqrt(static_cast<float>(kMaxPixels) / totalPixels);
+        finalW = static_cast<int>(width  * scale);
+        finalH = static_cast<int>(height * scale);
+        if (finalW < 1) finalW = 1;
+        if (finalH < 1) finalH = 1;
+        resized = resizeBGRA(bgra_pixels.data(), width, height, finalW, finalH);
+        pixelPtr = resized.data();
+        NAVI_LOG("[VLM]   resize %dx%d -> %dx%d (scale %.2f), RGB %.1f KB",
+                 width, height, finalW, finalH, scale,
+                 static_cast<double>(finalW) * finalH * 3 / 1024.0);
+    } else {
+        NAVI_LOG("[VLM]   image size OK, no resize needed (RGB %.1f KB)",
+                 static_cast<double>(finalW) * finalH * 3 / 1024.0);
+    }
+    logStep("image resize check");
+
     // ── 1. BGRA 像素 → RGB 数据（mtmd_bitmap 需要 RGBRGBRGB 格式） ──
-    std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
-    for (int i = 0; i < width * height; i++) {
-        rgb[i * 3 + 0] = bgra_pixels[i * 4 + 2]; // R (from BGRA offset 2)
-        rgb[i * 3 + 1] = bgra_pixels[i * 4 + 1]; // G
-        rgb[i * 3 + 2] = bgra_pixels[i * 4 + 0]; // B (from BGRA offset 0)
+    std::vector<uint8_t> rgb(static_cast<size_t>(finalW) * finalH * 3);
+    for (int i = 0; i < finalW * finalH; i++) {
+        rgb[i * 3 + 0] = pixelPtr[i * 4 + 2]; // R (from BGRA offset 2)
+        rgb[i * 3 + 1] = pixelPtr[i * 4 + 1]; // G
+        rgb[i * 3 + 2] = pixelPtr[i * 4 + 0]; // B (from BGRA offset 0)
     }
     logStep("BGRA -> RGB convert");
 
     // ── 2. 创建 mtmd bitmap（直接 RGB 数据，无需 BMP 编码） ──
     mtmd_bitmap* bitmap = mtmd_bitmap_init(
-        static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height),
+        static_cast<uint32_t>(finalW),
+        static_cast<uint32_t>(finalH),
         rgb.data());
     if (!bitmap) {
         return makeFallbackJson("mtmd_bitmap_init 失败");
@@ -246,6 +316,21 @@ std::string VlmEngine::doInference(
     prompt_text += "<|im_end|>\n<|im_start|>assistant\n";
 
     // ── 4. 使用 mtmd 对文本 + 图像进行统一 tokenize ──
+    // 日志：显示实际交付给模型的内容
+    {
+        double rgbKB = static_cast<double>(rgb.size()) / 1024.0;
+        // 将 prompt 中的图像标记替换为 blob 大小显示
+        std::string logPrompt = prompt_text;
+        std::string markerStr(marker);
+        auto pos = logPrompt.find(markerStr);
+        if (pos != std::string::npos) {
+            char blobTag[64];
+            snprintf(blobTag, sizeof(blobTag), "[blob data](%.0f KB)", rgbKB);
+            logPrompt.replace(pos, markerStr.size(), blobTag);
+        }
+        NAVI_LOG("[VLM]   === 交付模型的 prompt ===\n%s", logPrompt.c_str());
+    }
+
     mtmd_input_text input_text;
     input_text.text          = prompt_text.c_str();
     input_text.add_special   = true;

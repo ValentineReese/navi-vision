@@ -51,6 +51,22 @@ std::vector<ModelEntry> ModelManager::getDefaultModels() {
             "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-BF16.gguf",
             "Qwen2.5-VL-7B-Instruct-Q8_0.gguf",
             "Qwen2.5-VL-7B-mmproj-BF16.gguf"
+        },
+        {
+            "MiniCPM-o-4.5 Q4_K_M",
+            "8B, 4-bit, ~4.7 GB + 1.0 GB vision (openbmb)",
+            "https://huggingface.co/openbmb/MiniCPM-o-4_5-gguf/resolve/main/MiniCPM-o-4_5-Q4_K_M.gguf",
+            "https://huggingface.co/openbmb/MiniCPM-o-4_5-gguf/resolve/main/vision/MiniCPM-o-4_5-vision-F16.gguf",
+            "MiniCPM-o-4_5-Q4_K_M.gguf",
+            "MiniCPM-o-4_5-vision-F16.gguf"
+        },
+        {
+            "MiniCPM-o-4.5 Q8_0",
+            "8B, 8-bit, ~8.1 GB + 1.0 GB vision (openbmb)",
+            "https://huggingface.co/openbmb/MiniCPM-o-4_5-gguf/resolve/main/MiniCPM-o-4_5-Q8_0.gguf",
+            "https://huggingface.co/openbmb/MiniCPM-o-4_5-gguf/resolve/main/vision/MiniCPM-o-4_5-vision-F16.gguf",
+            "MiniCPM-o-4_5-Q8_0.gguf",
+            "MiniCPM-o-4_5-vision-F16.gguf"
         }
     };
 }

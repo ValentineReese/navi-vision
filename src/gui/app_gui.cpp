@@ -709,6 +709,17 @@ void AppGui::renderModelSettings() {
 
     ImGui::Separator();
 
+    // ── 推理设备选择 ──
+    ImGui::Text("Device:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120);
+    const char* deviceItems[] = { "GPU", "CPU" };
+    ImGui::Combo("##Device", &selectedDevice_, deviceItems, 2);
+    ImGui::SameLine();
+    ImGui::TextDisabled(selectedDevice_ == 0 ? "(offload all layers to GPU)" : "(CPU only, slower)");
+
+    ImGui::Separator();
+
     // ── 加载 / 卸载 ──
     if (modelLoading_.load()) {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f), "Loading model...");
@@ -878,7 +889,7 @@ void AppGui::startModelLoad() {
         VlmConfig cfg;
         cfg.model_path   = modelPath;
         cfg.mmproj_path  = mmprojPath;
-        cfg.n_gpu_layers = 99;
+        cfg.n_gpu_layers = (selectedDevice_ == 0) ? 99 : 0;
         cfg.n_threads    = 4;
         cfg.n_ctx        = 4096;
         cfg.temperature  = 0.1f;

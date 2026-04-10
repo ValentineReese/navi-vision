@@ -109,6 +109,7 @@ private:
     bool showModelSettings_ = false;
     std::vector<ModelEntry> defaultModels_;
     int selectedModelIdx_ = 0;
+    int selectedDevice_ = 0;         // 0 = GPU, 1 = CPU
     char customModelUrl_[1024] = {};
     char customMmprojUrl_[1024] = {};
     char proxyAddr_[256] = "127.0.0.1:7890";
