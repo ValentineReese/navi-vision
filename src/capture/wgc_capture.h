@@ -99,6 +99,11 @@ private:
     float targetFps_ = 3.0f;
     std::chrono::steady_clock::time_point lastCaptureTime_;
 
+    // ── 暂存纹理缓存（避免每帧重建） ──
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture_;
+    int stagingWidth_  = 0;
+    int stagingHeight_ = 0;
+
     // ── 目标窗口 ──
     HWND targetHwnd_ = nullptr;
 

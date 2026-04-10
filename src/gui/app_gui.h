@@ -4,6 +4,9 @@
 #include <vector>
 #include <string>
 #include <chrono>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -78,10 +81,22 @@ private:
     int previewHeight_ = 0;
     std::chrono::steady_clock::time_point lastPreviewTimestamp_;
 
+    // ── 每帧缓存的 FrameBuffer 读取结果 ──
+    std::shared_ptr<FrameData> cachedFrame_;
+
     // ── AI analysis state ──
     GameStateData lastAIResult_;
     std::chrono::steady_clock::time_point lastAnalysisTime_;
     float analysisIntervalSec_ = 2.0f;  // Run mock inference every N seconds
+
+    // ── Async inference ──
+    std::thread inferenceThread_;
+    std::mutex  inferenceMutex_;
+    GameStateData pendingAIResult_;
+    std::atomic<bool> inferenceRunning_{ false };
+    std::atomic<bool> hasNewResult_{ false };
+
+    void runInferenceAsync(std::vector<uint8_t> pixels, int width, int height);
 };
 
 } // namespace navi

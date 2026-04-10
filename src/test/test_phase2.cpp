@@ -308,7 +308,7 @@ static void testFrameBuffer() {
     auto frame = std::make_shared<navi::FrameData>();
     frame->width  = 100;
     frame->height = 200;
-    frame->pixels.resize(100 * 200 * 3, 42);
+    frame->pixels.resize(100 * 200 * 4, 42);
     buf.write(frame);
 
     auto read = buf.read();

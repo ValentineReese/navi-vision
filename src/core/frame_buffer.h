@@ -8,12 +8,12 @@
 
 namespace navi {
 
-/// 一帧画面数据（BGR 格式，连续内存块）
+/// 一帧画面数据（BGRA 格式，连续内存块，与 WGC 原生格式一致）
 struct FrameData {
-    std::vector<uint8_t> pixels;  // BGR 像素数据（width * height * 3 字节）
+    std::vector<uint8_t> pixels;  // BGRA 像素数据（width * height * 4 字节）
     int width    = 0;             // 宽度（像素）
     int height   = 0;             // 高度（像素）
-    int channels = 3;             // 通道数（BGR = 3）
+    int channels = 4;             // 通道数（BGRA = 4）
     std::chrono::steady_clock::time_point timestamp; // 捕获时间戳
 };
 

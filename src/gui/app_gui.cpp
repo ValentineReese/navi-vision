@@ -1,5 +1,6 @@
 #include "app_gui.h"
 #include <cstdio>
+#include <cstring>
 
 namespace navi {
 
@@ -20,6 +21,9 @@ AppGui::AppGui(std::shared_ptr<WgcCapture>       capture,
 }
 
 AppGui::~AppGui() {
+    // 等待推理线程结束
+    if (inferenceThread_.joinable())
+        inferenceThread_.join();
     previewSRV_.Reset();
     previewTexture_.Reset();
 }
@@ -29,6 +33,9 @@ AppGui::~AppGui() {
 // ============================================================
 
 void AppGui::render() {
+    // 每帧只读取一次 FrameBuffer，缓存结果供所有子模块使用
+    cachedFrame_ = visionActive_ ? buffer_->read() : nullptr;
+
     renderControlPanel();
     if (visionActive_) {
         renderPreview();
@@ -186,7 +193,7 @@ void AppGui::renderPreview() {
 }
 
 void AppGui::updatePreviewTexture() {
-    auto frame = buffer_->read();
+    auto frame = cachedFrame_;
     if (!frame)
         return;
 
@@ -205,7 +212,7 @@ void AppGui::updatePreviewTexture() {
         texDesc.Height           = frame->height;
         texDesc.MipLevels        = 1;
         texDesc.ArraySize        = 1;
-        texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
         texDesc.SampleDesc.Count = 1;
         texDesc.Usage            = D3D11_USAGE_DYNAMIC;
         texDesc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
@@ -223,7 +230,7 @@ void AppGui::updatePreviewTexture() {
         previewHeight_ = frame->height;
     }
 
-    // 将 BGR 像素数据上传到 RGBA 纹理
+    // 将 BGRA 像素数据直接上传到 BGRA 纹理（零转换，仅 memcpy）
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr = context_->Map(
         previewTexture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
@@ -232,16 +239,11 @@ void AppGui::updatePreviewTexture() {
     const uint8_t* src = frame->pixels.data();
     uint8_t*       dst = static_cast<uint8_t*>(mapped.pData);
 
+    const size_t rowBytes = static_cast<size_t>(frame->width) * 4;
     for (int y = 0; y < frame->height; y++) {
-        const uint8_t* srcRow = src + y * frame->width * 3;
-        uint8_t*       dstRow = dst + y * mapped.RowPitch;
-        for (int x = 0; x < frame->width; x++) {
-            // BGR → RGBA
-            dstRow[x * 4 + 0] = srcRow[x * 3 + 2]; // R ← BGR[2]
-            dstRow[x * 4 + 1] = srcRow[x * 3 + 1]; // G ← BGR[1]
-            dstRow[x * 4 + 2] = srcRow[x * 3 + 0]; // B ← BGR[0]
-            dstRow[x * 4 + 3] = 255;                // A = 不透明
-        }
+        std::memcpy(dst + y * mapped.RowPitch,
+                    src + y * rowBytes,
+                    rowBytes);
     }
 
     context_->Unmap(previewTexture_.Get(), 0);
@@ -255,20 +257,24 @@ void AppGui::updatePreviewTexture() {
 // ============================================================
 
 void AppGui::renderAIPanel() {
-    // Throttle: only run inference every analysisIntervalSec_ seconds
+    // Pick up any result from background inference thread
+    if (hasNewResult_.load()) {
+        std::lock_guard<std::mutex> lock(inferenceMutex_);
+        lastAIResult_ = pendingAIResult_;
+        hasNewResult_.store(false);
+    }
+
+    // Throttle: only launch inference every analysisIntervalSec_ seconds
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration<float>(now - lastAnalysisTime_).count();
 
-    if (engine_ && elapsed >= analysisIntervalSec_) {
-        auto frame = buffer_->read();
+    if (engine_ && elapsed >= analysisIntervalSec_ && !inferenceRunning_.load()) {
+        auto frame = cachedFrame_;
         if (frame && !frame->pixels.empty()) {
-            // Call mock (or real) inference engine
-            std::string raw = engine_->analyze_frame(
-                frame->pixels, frame->width, frame->height, "");
-
-            // Parse with sanitization + fallback safety
-            lastAIResult_ = parse_ai_response(raw);
+            // Launch inference on a background thread
             lastAnalysisTime_ = now;
+            // Copy pixel data to avoid keeping shared_ptr alive in thread
+            runInferenceAsync(frame->pixels, frame->width, frame->height);
         }
     }
 
@@ -334,7 +340,7 @@ void AppGui::renderStatusBar() {
     ImGui::Separator();
 
     if (visionActive_ && capture_->isCapturing()) {
-        auto frame = buffer_->read();
+        auto frame = cachedFrame_;
         if (frame) {
             ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Capturing");
             ImGui::SameLine();
@@ -374,6 +380,30 @@ std::string AppGui::wstringToUtf8(const std::wstring& wstr) {
         wstr.c_str(), static_cast<int>(wstr.size()),
         result.data(), size, nullptr, nullptr);
     return result;
+}
+
+// ============================================================
+//  异步推理
+// ============================================================
+
+void AppGui::runInferenceAsync(std::vector<uint8_t> pixels, int width, int height) {
+    // Join any previous thread that has finished
+    if (inferenceThread_.joinable())
+        inferenceThread_.join();
+
+    inferenceRunning_.store(true);
+
+    inferenceThread_ = std::thread([this, px = std::move(pixels), width, height]() {
+        std::string raw = engine_->analyze_frame(px, width, height, "");
+        GameStateData result = parse_ai_response(raw);
+
+        {
+            std::lock_guard<std::mutex> lock(inferenceMutex_);
+            pendingAIResult_ = std::move(result);
+        }
+        hasNewResult_.store(true);
+        inferenceRunning_.store(false);
+    });
 }
 
 } // namespace navi

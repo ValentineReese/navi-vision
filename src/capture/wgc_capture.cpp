@@ -1,4 +1,5 @@
 #include "wgc_capture.h"
+#include <cstring>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -263,61 +264,59 @@ void WgcCapture::captureLoop() {
                 continue;
             }
 
-            // ── 创建 CPU 可读的暂存纹理 ──
-            D3D11_TEXTURE2D_DESC stagingDesc = desc;
-            stagingDesc.Usage          = D3D11_USAGE_STAGING;
-            stagingDesc.BindFlags      = 0;
-            stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            stagingDesc.MiscFlags      = 0;
+            // ── 复用暂存纹理（仅尺寸变化时重建） ──
+            int width  = static_cast<int>(desc.Width);
+            int height = static_cast<int>(desc.Height);
 
-            Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture;
-            HRESULT hr = d3dDevice_->CreateTexture2D(
-                &stagingDesc, nullptr, stagingTexture.GetAddressOf());
-            if (FAILED(hr)) {
-                frame.Close();
-                continue;
+            if (width != stagingWidth_ || height != stagingHeight_) {
+                stagingTexture_.Reset();
+                D3D11_TEXTURE2D_DESC stagingDesc = desc;
+                stagingDesc.Usage          = D3D11_USAGE_STAGING;
+                stagingDesc.BindFlags      = 0;
+                stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                stagingDesc.MiscFlags      = 0;
+
+                HRESULT hr = d3dDevice_->CreateTexture2D(
+                    &stagingDesc, nullptr, stagingTexture_.GetAddressOf());
+                if (FAILED(hr)) {
+                    frame.Close();
+                    continue;
+                }
+                stagingWidth_  = width;
+                stagingHeight_ = height;
             }
 
             // GPU 端拷贝：捕获纹理 → 暂存纹理
-            d3dContext_->CopyResource(stagingTexture.Get(), capturedTexture.Get());
+            d3dContext_->CopyResource(stagingTexture_.Get(), capturedTexture.Get());
 
             // 映射暂存纹理到 CPU 可读内存
             D3D11_MAPPED_SUBRESOURCE mapped;
-            hr = d3dContext_->Map(
-                stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+            HRESULT hr = d3dContext_->Map(
+                stagingTexture_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
             if (FAILED(hr)) {
                 frame.Close();
                 continue;
             }
-
-            // ── BGRA → BGR 像素格式转换 ──
-            int width  = static_cast<int>(desc.Width);
-            int height = static_cast<int>(desc.Height);
 
             auto frameData      = std::make_shared<FrameData>();
             frameData->width    = width;
             frameData->height   = height;
-            frameData->channels = 3;
+            frameData->channels = 4;
             frameData->pixels.resize(
-                static_cast<size_t>(width) * height * 3);
+                static_cast<size_t>(width) * height * 4);
             frameData->timestamp = std::chrono::steady_clock::now();
 
             const uint8_t* srcData = static_cast<const uint8_t*>(mapped.pData);
             uint8_t*       dstData = frameData->pixels.data();
 
+            const size_t rowBytes = static_cast<size_t>(width) * 4;
             for (int y = 0; y < height; y++) {
-                const uint8_t* srcRow = srcData + y * mapped.RowPitch;
-                uint8_t*       dstRow = dstData + y * width * 3;
-                for (int x = 0; x < width; x++) {
-                    // BGRA 内存布局: [B][G][R][A]
-                    // BGR  目标布局: [B][G][R]（跳过 Alpha）
-                    dstRow[x * 3 + 0] = srcRow[x * 4 + 0]; // B
-                    dstRow[x * 3 + 1] = srcRow[x * 4 + 1]; // G
-                    dstRow[x * 3 + 2] = srcRow[x * 4 + 2]; // R
-                }
+                std::memcpy(dstData + y * rowBytes,
+                            srcData + y * mapped.RowPitch,
+                            rowBytes);
             }
 
-            d3dContext_->Unmap(stagingTexture.Get(), 0);
+            d3dContext_->Unmap(stagingTexture_.Get(), 0);
             frame.Close();
 
             // 将帧数据写入线程安全缓冲区
@@ -351,6 +350,9 @@ void WgcCapture::cleanup() {
     }
     captureItem_ = nullptr;
     winrtDevice_ = nullptr;
+    stagingTexture_.Reset();
+    stagingWidth_  = 0;
+    stagingHeight_ = 0;
     d3dContext_.Reset();
     d3dDevice_.Reset();
 }
