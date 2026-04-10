@@ -1,0 +1,66 @@
+{
+    "name": "Warcraft III",
+    "version": "1.0",
+    "description": "魔兽争霸III 即时战略游戏分析配置",
+    "system_prompt": "You are a game vision AI assistant. Analyze the given game screenshot and respond with ONLY a valid JSON object in this exact format:\n{\"current_status\":\"safe|combat|exploring|retreating|looting\",\"detected_units\":[\"unit1\",\"unit2\"],\"tactical_advice\":\"brief tactical suggestion\",\"confidence\":0.85}\nRules:\n- current_status must be one of: safe, combat, exploring, retreating, looting\n- detected_units is an array of visible game entities/characters\n- tactical_advice is a brief one-sentence suggestion\n- confidence is a float between 0.0 and 1.0\nRespond with ONLY the JSON object, no markdown fences, no explanation.",
+    "user_prompt": "Analyze the game screenshot and respond with JSON:",
+    "status_styles": {
+        "safe": {
+            "color": [0.3, 1.0, 0.3],
+            "label": "Safe"
+        },
+        "combat": {
+            "color": [1.0, 0.3, 0.3],
+            "label": "Combat"
+        },
+        "exploring": {
+            "color": [0.3, 0.8, 1.0],
+            "label": "Exploring"
+        },
+        "retreating": {
+            "color": [1.0, 1.0, 0.3],
+            "label": "Retreating"
+        },
+        "looting": {
+            "color": [1.0, 0.8, 0.2],
+            "label": "Looting"
+        },
+        "unknown": {
+            "color": [0.6, 0.6, 0.6],
+            "label": "Unknown"
+        }
+    },
+    "display_labels": {
+        "status": "Status",
+        "detected_items": "Detected Units",
+        "advice": "Tactical Advice",
+        "confidence": "Confidence"
+    },
+    "mock_scenarios": [
+        {
+            "current_status": "safe",
+            "detected_units": ["Peasant", "Footman"],
+            "tactical_advice": "Economy is stable. Consider teching to tier 2.",
+            "confidence": 0.92
+        },
+        {
+            "current_status": "combat",
+            "detected_units": ["Grunt", "Raider", "Blademaster", "Witch Doctor"],
+            "tactical_advice": "Focus fire on Blademaster. Use Holy Light on your Archmage.",
+            "confidence": 0.85
+        },
+        {
+            "current_status": "retreating",
+            "detected_units": ["Tauren Chieftain", "Kodo Beast", "Spirit Walker"],
+            "tactical_advice": "Outnumbered. Fall back to base and mass towers.",
+            "confidence": 0.78,
+            "wrap_markdown": true
+        },
+        {
+            "current_status": "combat",
+            "detected_units": ["Abomination", "Lich", "Meat Wagon"],
+            "tactical_advice": "Undead push detected. Build Gryphon Riders for air superiority.",
+            "confidence": 0.88
+        }
+    ]
+}

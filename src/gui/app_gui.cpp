@@ -28,6 +28,12 @@ AppGui::AppGui(std::shared_ptr<WgcCapture>       capture,
         snprintf(customMmprojUrl_, sizeof(customMmprojUrl_), "%s",
                  defaultModels_[0].mmproj_url.c_str());
     }
+
+    // 加载游戏配置文件
+    profileManager_.scanDirectory(ProfileManager::getProfilesDir());
+    if (profileManager_.count() > 0) {
+        applyProfile(0);
+    }
 }
 
 AppGui::~AppGui() {
@@ -139,6 +145,31 @@ void AppGui::renderControlPanel() {
     }
     if (ImGui::Button("Model Settings", ImVec2(-1, 28))) {
         showModelSettings_ = !showModelSettings_;
+    }
+
+    // ── 游戏配置选择 ──
+    if (profileManager_.count() > 0) {
+        ImGui::Separator();
+        ImGui::Text("Game Profile:");
+        auto names = profileManager_.getProfileNames();
+        if (ImGui::BeginCombo("##ProfileCombo",
+                              names[selectedProfileIdx_].c_str())) {
+            for (int i = 0; i < static_cast<int>(names.size()); i++) {
+                bool selected = (i == selectedProfileIdx_);
+                if (ImGui::Selectable(names[i].c_str(), selected)) {
+                    if (i != selectedProfileIdx_) {
+                        applyProfile(i);
+                    }
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+                // 悬停时显示配置描述
+                const GameProfile* p = profileManager_.getProfile(i);
+                if (p && ImGui::IsItemHovered() && !p->description.empty()) {
+                    ImGui::SetTooltip("%s", p->description.c_str());
+                }
+            }
+            ImGui::EndCombo();
+        }
     }
 
     // 窗口选择弹窗必须在同一个 ImGui 窗口的 ID 栈内渲染
@@ -318,6 +349,9 @@ void AppGui::renderAIPanel() {
         }
     }
 
+    // 获取当前配置
+    const GameProfile* prof = profileManager_.getProfile(selectedProfileIdx_);
+
     // Render the AI result panel
     ImGui::SetNextWindowPos(ImVec2(440, 120), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 300), ImGuiCond_FirstUseEver);
@@ -325,6 +359,10 @@ void AppGui::renderAIPanel() {
 
     if (engine_) {
         ImGui::TextDisabled("Engine: %s", engine_->engine_name().c_str());
+    }
+    if (prof) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("| Profile: %s", prof->name.c_str());
     }
     ImGui::Separator();
 
@@ -334,27 +372,40 @@ void AppGui::renderAIPanel() {
                            "[Fallback] No valid AI response yet");
     }
 
-    // Status with color coding
-    ImVec4 statusColor(0.6f, 0.6f, 0.6f, 1.0f);
-    if (lastAIResult_.current_status == "safe")
-        statusColor = ImVec4(0.3f, 1.0f, 0.3f, 1.0f);
-    else if (lastAIResult_.current_status == "combat")
-        statusColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
-    else if (lastAIResult_.current_status == "retreating")
-        statusColor = ImVec4(1.0f, 1.0f, 0.3f, 1.0f);
+    // 显示标签
+    std::string lblStatus    = prof ? prof->display_labels.status         : "Status";
+    std::string lblItems     = prof ? prof->display_labels.detected_items : "Detected Units";
+    std::string lblAdvice    = prof ? prof->display_labels.advice         : "Tactical Advice";
+    std::string lblConf      = prof ? prof->display_labels.confidence     : "Confidence";
 
-    ImGui::TextColored(statusColor, "Status: %s",
+    // Status with color coding — 从配置获取颜色
+    ImVec4 statusColor(0.6f, 0.6f, 0.6f, 1.0f);
+    if (prof) {
+        auto c = prof->getStatusColor(lastAIResult_.current_status);
+        statusColor = ImVec4(c[0], c[1], c[2], 1.0f);
+    } else {
+        // 后备硬编码颜色
+        if (lastAIResult_.current_status == "safe")
+            statusColor = ImVec4(0.3f, 1.0f, 0.3f, 1.0f);
+        else if (lastAIResult_.current_status == "combat")
+            statusColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+        else if (lastAIResult_.current_status == "retreating")
+            statusColor = ImVec4(1.0f, 1.0f, 0.3f, 1.0f);
+    }
+
+    ImGui::TextColored(statusColor, "%s: %s",
+                       lblStatus.c_str(),
                        lastAIResult_.current_status.c_str());
 
     // Confidence bar
-    ImGui::Text("Confidence:");
+    ImGui::Text("%s:", lblConf.c_str());
     ImGui::SameLine();
     ImGui::ProgressBar(lastAIResult_.confidence, ImVec2(150, 16));
 
     ImGui::Separator();
 
     // Detected units
-    ImGui::Text("Detected Units:");
+    ImGui::Text("%s:", lblItems.c_str());
     if (lastAIResult_.detected_units.empty()) {
         ImGui::TextDisabled("  (none)");
     } else {
@@ -366,7 +417,7 @@ void AppGui::renderAIPanel() {
     ImGui::Separator();
 
     // Tactical advice
-    ImGui::Text("Tactical Advice:");
+    ImGui::Text("%s:", lblAdvice.c_str());
     ImGui::TextWrapped("%s", lastAIResult_.tactical_advice.c_str());
 
     ImGui::End();
@@ -444,6 +495,23 @@ void AppGui::runInferenceAsync(std::vector<uint8_t> pixels, int width, int heigh
         hasNewResult_.store(true);
         inferenceRunning_.store(false);
     });
+}
+
+// ============================================================
+//  游戏配置切换
+// ============================================================
+
+void AppGui::applyProfile(int index) {
+    const GameProfile* prof = profileManager_.getProfile(index);
+    if (!prof) return;
+
+    selectedProfileIdx_ = index;
+
+    // 将 mock 场景应用到 MockInference（如果当前引擎是 MockInference）
+    auto* mock = dynamic_cast<MockInference*>(engine_.get());
+    if (mock) {
+        mock->setProfile(prof);
+    }
 }
 
 // ============================================================

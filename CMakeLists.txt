@@ -39,6 +39,7 @@ add_executable(NaviVision WIN32
     src/main.cpp
     src/core/frame_buffer.cpp
     src/core/response_parser.cpp
+    src/core/game_profile.cpp
     src/capture/window_enumerator.cpp
     src/capture/wgc_capture.cpp
     src/inference/inference_engine.cpp
@@ -93,6 +94,11 @@ add_custom_command(TARGET NaviVision POST_BUILD
         $<TARGET_FILE:ggml-cpu>  $<TARGET_FILE_DIR:NaviVision>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:mtmd>     $<TARGET_FILE_DIR:NaviVision>
+    # 复制游戏配置文件到 profiles 子目录
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:NaviVision>/profiles
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/profiles $<TARGET_FILE_DIR:NaviVision>/profiles
 )
 
 # ============================================================
@@ -102,6 +108,7 @@ add_executable(NaviVisionTest
     src/test/test_phase2.cpp
     src/core/frame_buffer.cpp
     src/core/response_parser.cpp
+    src/core/game_profile.cpp
     src/inference/inference_engine.cpp
 )
 

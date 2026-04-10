@@ -10,14 +10,14 @@
 #include <sstream>
 #include <chrono>
 #include <filesystem>
+#include <cstdio>
 
 namespace navi {
 
 // ============================================================
-//  系统提示词模板
-//  强制模型输出严格的 JSON 结构，与 GameStateData 字段对齐
+//  默认系统提示词（当 GameProfile 未配置时使用）
 // ============================================================
-static const char* SYSTEM_PROMPT = R"(You are a game vision AI assistant. Analyze the given game screenshot and respond with ONLY a valid JSON object in this exact format:
+static const char* DEFAULT_SYSTEM_PROMPT = R"(You are a game vision AI assistant. Analyze the given game screenshot and respond with ONLY a valid JSON object in this exact format:
 {"current_status":"safe|combat|exploring|retreating|looting","detected_units":["unit1","unit2"],"tactical_advice":"brief tactical suggestion","confidence":0.85}
 Rules:
 - current_status must be one of: safe, combat, exploring, retreating, looting
@@ -26,6 +26,7 @@ Rules:
 - confidence is a float between 0.0 and 1.0
 Respond with ONLY the JSON object, no markdown fences, no explanation.)";
 
+static const char* DEFAULT_USER_PROMPT = "Analyze the game screenshot and respond with JSON:";
 // ============================================================
 //  构造函数 — 加载模型
 // ============================================================
@@ -152,12 +153,24 @@ std::string VlmEngine::analyze_frame(
     // 推理互斥锁 — llama.cpp 上下文非线程安全，同一时刻只能有一个推理在执行
     std::lock_guard<std::mutex> lock(inferenceMutex_);
 
+    auto t0 = std::chrono::steady_clock::now();
+    printf("[VLM] ── 开始推理 ── 图像 %dx%d (%.1f MB)\n",
+           width, height, image_data.size() / (1024.0 * 1024.0));
+
     try {
-        return doInference(image_data, width, height, voice_text_prompt);
+        auto result = doInference(image_data, width, height, voice_text_prompt);
+        auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        printf("[VLM] ── 推理完成 ── 总耗时 %.2f s\n", dt);
+        printf("[VLM] 输出 (%zu chars): %.200s%s\n",
+               result.size(), result.c_str(), result.size() > 200 ? "..." : "");
+        return result;
     } catch (const std::exception& e) {
+        auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        printf("[VLM] !! 推理异常 (%.2f s): %s\n", dt, e.what());
         setError(std::string("推理异常: ") + e.what());
         return makeFallbackJson(e.what());
     } catch (...) {
+        printf("[VLM] !! 推理未知异常\n");
         setError("推理过程发生未知异常");
         return makeFallbackJson("unknown error");
     }
@@ -173,10 +186,19 @@ std::string VlmEngine::doInference(
     int width, int height,
     const std::string& user_prompt)
 {
+    auto tStep = std::chrono::steady_clock::now();
+    auto logStep = [&](const char* label) {
+        auto now = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(now - tStep).count();
+        printf("[VLM]   %-30s %8.1f ms\n", label, ms);
+        tStep = now;
+    };
+
     // ── 0. 清除上一轮的 KV 缓存，开始全新推理 ──
     llama_memory_clear(llama_get_memory(ctx_), true);
 
     const llama_vocab* vocab = llama_model_get_vocab(model_);
+    logStep("KV cache clear");
 
     // ── 1. BGRA 像素 → RGB 数据（mtmd_bitmap 需要 RGBRGBRGB 格式） ──
     std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
@@ -185,6 +207,7 @@ std::string VlmEngine::doInference(
         rgb[i * 3 + 1] = bgra_pixels[i * 4 + 1]; // G
         rgb[i * 3 + 2] = bgra_pixels[i * 4 + 0]; // B (from BGRA offset 0)
     }
+    logStep("BGRA -> RGB convert");
 
     // ── 2. 创建 mtmd bitmap（直接 RGB 数据，无需 BMP 编码） ──
     mtmd_bitmap* bitmap = mtmd_bitmap_init(
@@ -194,19 +217,29 @@ std::string VlmEngine::doInference(
     if (!bitmap) {
         return makeFallbackJson("mtmd_bitmap_init 失败");
     }
+    logStep("mtmd_bitmap_init");
 
     // ── 3. 构建包含图像标记的提示词 ──
     const char* marker = mtmd_default_marker();
+
+    // 使用配置中的提示词（来自 GameProfile），为空时退回默认值
+    const std::string& sys_prompt  = config_.system_prompt.empty()
+                                     ? std::string(DEFAULT_SYSTEM_PROMPT)
+                                     : config_.system_prompt;
+    const std::string& usr_prompt  = config_.user_prompt.empty()
+                                     ? std::string(DEFAULT_USER_PROMPT)
+                                     : config_.user_prompt;
+
     std::string prompt_text;
     prompt_text += "<|im_start|>system\n";
-    prompt_text += SYSTEM_PROMPT;
+    prompt_text += sys_prompt;
     prompt_text += "<|im_end|>\n<|im_start|>user\n";
     prompt_text += marker;  // 图像标记，mtmd 会替换为图像 token
     prompt_text += "\n";
     if (!user_prompt.empty()) {
         prompt_text += user_prompt + "\n";
     }
-    prompt_text += "Analyze the game screenshot and respond with JSON:";
+    prompt_text += usr_prompt;
     prompt_text += "<|im_end|>\n<|im_start|>assistant\n";
 
     // ── 4. 使用 mtmd 对文本 + 图像进行统一 tokenize ──
@@ -225,6 +258,7 @@ std::string VlmEngine::doInference(
         mtmd_input_chunks_free(chunks);
         return makeFallbackJson("mtmd_tokenize 失败, code=" + std::to_string(tok_res));
     }
+    logStep("mtmd_tokenize");
 
     // ── 5. 一次性 eval 所有 chunks（文本 + 图像 embedding） ──
     llama_pos n_past = 0;
@@ -243,6 +277,8 @@ std::string VlmEngine::doInference(
         return makeFallbackJson("mtmd_helper_eval_chunks 失败, code=" + std::to_string(eval_res));
     }
     n_past = new_n_past;
+    printf("[VLM]   prompt tokens (n_past): %d\n", (int)n_past);
+    logStep("eval chunks (prefill)");
 
     // ── 6. 自回归生成循环 ──
     std::string output;
@@ -250,6 +286,7 @@ std::string VlmEngine::doInference(
 
     // 分配可复用的单 token batch
     llama_batch batch = llama_batch_init(1, 0, 1);
+    int gen_count = 0;
 
     for (int i = 0; i < config_.max_tokens; i++) {
         // 使用采样链从 logits 中采样
@@ -266,6 +303,7 @@ std::string VlmEngine::doInference(
         if (n > 0) {
             output.append(buf, n);
         }
+        gen_count++;
 
         // 准备单 token batch 送回模型
         batch.n_tokens       = 1;
@@ -293,6 +331,8 @@ std::string VlmEngine::doInference(
     }
 
     llama_batch_free(batch);
+    printf("[VLM]   generated %d tokens\n", gen_count);
+    logStep("token generation (decode)");
 
     if (output.empty()) {
         return makeFallbackJson("模型未生成任何输出");

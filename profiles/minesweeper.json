@@ -1,0 +1,62 @@
+{
+    "name": "Windows Minesweeper",
+    "version": "1.0",
+    "description": "Windows 经典扫雷游戏分析配置",
+    "system_prompt": "You are a game vision AI assistant specialized in analyzing Windows Minesweeper. Analyze the given game screenshot and respond with ONLY a valid JSON object in this exact format:\n{\"current_status\":\"playing|won|lost|idle\",\"detected_units\":[\"description of visible cells\"],\"tactical_advice\":\"brief strategic suggestion\",\"confidence\":0.85}\nRules:\n- current_status must be one of: playing, won, lost, idle\n- detected_units is an array of visible cell descriptions (e.g. \"number 3 at row 2 col 5\", \"mine revealed\", \"flag at row 1 col 3\", \"unrevealed cell\")\n- tactical_advice is a brief one-sentence Minesweeper strategy suggestion\n- confidence is a float between 0.0 and 1.0\nRespond with ONLY the JSON object, no markdown fences, no explanation.",
+    "user_prompt": "Analyze the Minesweeper screenshot and respond with JSON:",
+    "status_styles": {
+        "playing": {
+            "color": [0.3, 1.0, 0.3],
+            "label": "Playing"
+        },
+        "won": {
+            "color": [0.2, 0.8, 1.0],
+            "label": "Victory!"
+        },
+        "lost": {
+            "color": [1.0, 0.3, 0.3],
+            "label": "Game Over"
+        },
+        "idle": {
+            "color": [0.8, 0.8, 0.3],
+            "label": "Idle"
+        },
+        "unknown": {
+            "color": [0.6, 0.6, 0.6],
+            "label": "Unknown"
+        }
+    },
+    "display_labels": {
+        "status": "Game Status",
+        "detected_items": "Detected Cells",
+        "advice": "Strategy Advice",
+        "confidence": "Confidence"
+    },
+    "mock_scenarios": [
+        {
+            "current_status": "playing",
+            "detected_units": ["Number 1 at (1,1)", "Number 2 at (2,3)", "Flag at (0,4)", "Unrevealed cells in center"],
+            "tactical_advice": "Cell (3,2) is safe based on the 1-count constraint at (2,2).",
+            "confidence": 0.91
+        },
+        {
+            "current_status": "playing",
+            "detected_units": ["Number 3 at (4,4)", "Number 1 at (3,3)", "Flag at (5,4)", "Unrevealed (5,5)"],
+            "tactical_advice": "The 3 at (4,4) has only one remaining adjacent unrevealed cell — it must be a mine. Flag it.",
+            "confidence": 0.88,
+            "wrap_markdown": true
+        },
+        {
+            "current_status": "lost",
+            "detected_units": ["Mine revealed at (2,3)", "Mine revealed at (6,1)", "Cross mark at (4,5)"],
+            "tactical_advice": "Game over. The mine at (2,3) was unavoidable given the information. Start a new game.",
+            "confidence": 0.95
+        },
+        {
+            "current_status": "won",
+            "detected_units": ["All mines flagged", "All safe cells revealed"],
+            "tactical_advice": "Congratulations! All mines correctly identified. Try a harder difficulty.",
+            "confidence": 0.99
+        }
+    ]
+}

@@ -6,26 +6,55 @@ namespace navi {
 // ============================================================
 //  MockInference::analyze_frame
 //
-//  Rotates through several mock scenarios so testers can
-//  verify that the GUI handles all possible game states.
-//  In production this will be replaced by llama.cpp calls.
+//  如果设置了 GameProfile，则使用配置中的 mock_scenarios；
+//  否则退回内置的默认场景。
 // ============================================================
 std::string MockInference::analyze_frame(
     const std::vector<uint8_t>& image_data,
     int width, int height,
     const std::string& voice_text_prompt) {
 
-    // Suppress unused-parameter warnings while keeping the signature
     (void)image_data;
 
     call_count_++;
+
+    // ── 如果配置了 GameProfile 且有 mock 场景，从中轮换 ──
+    if (profile_ && !profile_->mock_scenarios.empty()) {
+        int idx = call_count_ % static_cast<int>(profile_->mock_scenarios.size());
+        const auto& sc = profile_->mock_scenarios[idx];
+
+        // 构建 JSON
+        nlohmann::json j;
+        j["current_status"]  = sc.current_status;
+        j["detected_units"]  = sc.detected_units;
+        j["confidence"]      = sc.confidence;
+
+        if (!voice_text_prompt.empty()) {
+            j["tactical_advice"] = "You asked: " + voice_text_prompt +
+                                   " — " + sc.tactical_advice;
+        } else {
+            j["tactical_advice"] = sc.tactical_advice;
+        }
+
+        std::string json_str = j.dump(4);
+
+        // 如果场景标记了 wrap_markdown，用 ```json 包裹（测试 sanitizer）
+        if (sc.wrap_markdown) {
+            std::ostringstream oss;
+            oss << "Here is my analysis (" << width << "x" << height << "):\n";
+            oss << "```json\n" << json_str << "\n```\n";
+            return oss.str();
+        }
+        return json_str;
+    }
+
+    // ── 无配置时：使用内置默认场景 ──
     int scenario = call_count_ % 4;
 
     std::ostringstream oss;
 
     switch (scenario) {
     case 0:
-        // Scenario A: Safe base-building phase
         oss << R"({
     "current_status": "safe",
     "detected_units": ["Peasant", "Footman"],
@@ -35,7 +64,6 @@ std::string MockInference::analyze_frame(
         break;
 
     case 1:
-        // Scenario B: Active combat with multiple enemies
         oss << R"({
     "current_status": "combat",
     "detected_units": ["Grunt", "Raider", "Blademaster", "Witch Doctor"],
@@ -45,7 +73,6 @@ std::string MockInference::analyze_frame(
         break;
 
     case 2:
-        // Scenario C: Response wrapped in markdown fences (tests sanitizer)
         oss << "Here is my analysis of the frame (" << width << "x" << height << "):\n";
         oss << "```json\n";
         oss << R"({
@@ -59,7 +86,6 @@ std::string MockInference::analyze_frame(
         break;
 
     case 3:
-        // Scenario D: Include voice prompt echo for testing voice path
         oss << R"({
     "current_status": "combat",
     "detected_units": ["Abomination", "Lich", "Meat Wagon"],

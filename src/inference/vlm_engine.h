@@ -32,6 +32,10 @@ struct VlmConfig {
     int   n_batch      = 512;     // 批处理大小（影响图像 embedding 分批送入的粒度）
     float temperature  = 0.1f;    // 采样温度（低温 = 更确定性的输出，适合结构化 JSON）
     int   max_tokens   = 512;     // 最大生成 token 数
+
+    // ── 来自 GameProfile 的提示词（为空时使用内置默认值） ──
+    std::string system_prompt;    // 系统提示词
+    std::string user_prompt;      // 用户提示词
 };
 
 // ============================================================

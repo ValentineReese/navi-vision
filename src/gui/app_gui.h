@@ -14,6 +14,7 @@
 
 #include "../core/frame_buffer.h"
 #include "../core/game_state.h"
+#include "../core/game_profile.h"
 #include "../core/response_parser.h"
 #include "../capture/wgc_capture.h"
 #include "../capture/window_enumerator.h"
@@ -128,6 +129,11 @@ private:
     std::shared_ptr<IInferenceEngine> pendingEngine_;
     std::mutex modelLoadMutex_;
     std::string modelLoadError_;
+
+    // ── Game Profile ──
+    ProfileManager profileManager_;
+    int selectedProfileIdx_ = 0;
+    void applyProfile(int index);
 };
 
 } // namespace navi

@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include "../core/game_profile.h"
 
 namespace navi {
 
@@ -53,8 +54,12 @@ public:
 
     std::string engine_name() const override { return "MockInference v1.0"; }
 
+    /// 设置游戏配置文件，Mock 将使用其中的 mock_scenarios
+    void setProfile(const GameProfile* profile) { profile_ = profile; }
+
 private:
     int call_count_ = 0;
+    const GameProfile* profile_ = nullptr;
 };
 
 } // namespace navi
