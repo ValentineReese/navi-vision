@@ -1,9 +1,9 @@
 #include "vlm_engine.h"
 
-// ── llama.cpp C API 头文件 ──
+// ── llama.cpp + mtmd (多模态) C API 头文件 ──
 #include <llama.h>
-#include <clip.h>
-#include <llava.h>
+#include <mtmd.h>
+#include <mtmd-helper.h>
 
 #include <cstring>
 #include <algorithm>
@@ -64,29 +64,21 @@ bool VlmEngine::loadModels() {
     }
 
     // ── 1. 加载主 LLM 模型 ──
-    // llama_model_params 控制模型加载行为：
-    //   n_gpu_layers: 将多少层卸载到 GPU（0 = 纯 CPU，99 = 尽量全部上 GPU）
-    //   use_mmap: 内存映射加载，减少物理内存占用
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = config_.n_gpu_layers;
     model_params.use_mmap     = true;
 
-    model_ = llama_load_model_from_file(config_.model_path.c_str(), model_params);
+    model_ = llama_model_load_from_file(config_.model_path.c_str(), model_params);
     if (!model_) {
-        setError("llama_load_model_from_file 失败，可能原因：文件损坏、VRAM 不足、格式不兼容");
+        setError("llama_model_load_from_file 失败，可能原因：文件损坏、VRAM 不足、格式不兼容");
         return false;
     }
 
     // ── 2. 创建推理上下文 ──
-    // llama_context_params 控制运行时行为：
-    //   n_ctx:     上下文窗口，需足够容纳图像 token（通常 576~2048）+ 文本 + 生成
-    //   n_threads: CPU 推理线程数，建议 = 物理核心数 / 2（避免与游戏争抢）
-    //   n_batch:   每次 decode 最多处理的 token 数
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx     = config_.n_ctx;
     ctx_params.n_threads = config_.n_threads;
     ctx_params.n_batch   = config_.n_batch;
-    ctx_params.seed      = 42;
 
     ctx_ = llama_new_context_with_model(model_, ctx_params);
     if (!ctx_) {
@@ -94,20 +86,25 @@ bool VlmEngine::loadModels() {
         return false;
     }
 
-    // ── 3. 加载 CLIP 视觉投影器（mmproj.gguf） ──
-    // clip_model_load 创建一个独立的视觉编码器上下文
-    // verbosity=1 打印加载信息便于调试
-    clipCtx_ = clip_model_load(config_.mmproj_path.c_str(), /*verbosity=*/ 1);
-    if (!clipCtx_) {
-        setError("clip_model_load 失败，视觉投影器文件可能损坏");
+    // ── 3. 加载 mtmd 多模态上下文（替代旧版 CLIP + LLaVA） ──
+    mtmd_context_params mparams = mtmd_context_params_default();
+    mparams.use_gpu       = (config_.n_gpu_layers > 0);
+    mparams.print_timings = false;
+    mparams.n_threads     = config_.n_threads;
+
+    mtmdCtx_ = mtmd_init_from_file(config_.mmproj_path.c_str(), model_, mparams);
+    if (!mtmdCtx_) {
+        setError("mtmd_init_from_file 失败，视觉投影器文件可能损坏或与主模型不兼容");
         return false;
     }
 
-    // ── 4. 校验 CLIP embedding 维度与 LLM embedding 维度是否匹配 ──
-    if (!llava_validate_embed_size(ctx_, clipCtx_)) {
-        setError("CLIP 与 LLM 的 embedding 维度不匹配，请确认 mmproj 与主模型版本对应");
-        return false;
-    }
+    // ── 4. 创建采样链：temp → top_k → top_p → dist ──
+    llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    sampler_ = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(sampler_, llama_sampler_init_temp(config_.temperature));
+    llama_sampler_chain_add(sampler_, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(sampler_, llama_sampler_init_top_p(0.95f, 1));
+    llama_sampler_chain_add(sampler_, llama_sampler_init_dist(42));
 
     loaded_.store(true);
     return true;
@@ -119,16 +116,20 @@ bool VlmEngine::loadModels() {
 void VlmEngine::unloadModels() {
     loaded_.store(false);
 
-    if (clipCtx_) {
-        clip_free(clipCtx_);
-        clipCtx_ = nullptr;
+    if (sampler_) {
+        llama_sampler_free(sampler_);
+        sampler_ = nullptr;
+    }
+    if (mtmdCtx_) {
+        mtmd_free(mtmdCtx_);
+        mtmdCtx_ = nullptr;
     }
     if (ctx_) {
         llama_free(ctx_);
         ctx_ = nullptr;
     }
     if (model_) {
-        llama_free_model(model_);
+        llama_model_free(model_);
         model_ = nullptr;
     }
 }
@@ -173,206 +174,131 @@ std::string VlmEngine::doInference(
     const std::string& user_prompt)
 {
     // ── 0. 清除上一轮的 KV 缓存，开始全新推理 ──
-    llama_kv_cache_clear(ctx_);
-    int n_past = 0;  // 跟踪当前已写入 KV 缓存的 token 位置
+    llama_memory_clear(llama_get_memory(ctx_), true);
 
-    // ── 1. BGRA 像素 → 内存 BMP 编码 ──
-    // clip_image_u8 是不透明类型，不能直接赋值字段。
-    // 因此我们把原始像素编码为 24-bit BMP（无压缩），
-    // 再通过 llava_image_embed_make_with_bytes 让 llava 内部解码。
-    const int row_bytes   = width * 3;
-    const int row_padding = (4 - (row_bytes % 4)) % 4;
-    const int stride      = row_bytes + row_padding;
-    const int pixel_size  = stride * height;
-    const int file_size   = 54 + pixel_size;  // 14 (file hdr) + 40 (info hdr) + pixels
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
 
-    std::vector<uint8_t> bmp(file_size, 0);
-
-    // ── BMP File Header (14 bytes) ──
-    bmp[0] = 'B'; bmp[1] = 'M';
-    std::memcpy(&bmp[2],  &file_size, 4);   // bfSize
-    int data_offset = 54;
-    std::memcpy(&bmp[10], &data_offset, 4);  // bfOffBits
-
-    // ── BMP Info Header (BITMAPINFOHEADER, 40 bytes) ──
-    int info_size = 40;
-    std::memcpy(&bmp[14], &info_size, 4);    // biSize
-    std::memcpy(&bmp[18], &width, 4);        // biWidth
-    std::memcpy(&bmp[22], &height, 4);       // biHeight (positive = bottom-up)
-    short planes = 1, bpp = 24;
-    std::memcpy(&bmp[26], &planes, 2);       // biPlanes
-    std::memcpy(&bmp[28], &bpp, 2);          // biBitCount
-    // biCompression = 0 (BI_RGB), rest zero → already zero-initialized
-
-    // ── 像素数据（BMP 行序 = 底→顶，像素序 = BGR） ──
-    // BGRA 源数据刚好是 B-G-R 顺序，只需跳过 A 通道
-    for (int y = 0; y < height; y++) {
-        const int src_row = (height - 1 - y);  // BMP 底→顶翻转
-        const uint8_t* src = bgra_pixels.data() + src_row * width * 4;
-        uint8_t* dst = bmp.data() + 54 + y * stride;
-        for (int x = 0; x < width; x++) {
-            dst[x * 3 + 0] = src[x * 4 + 0]; // B
-            dst[x * 3 + 1] = src[x * 4 + 1]; // G
-            dst[x * 3 + 2] = src[x * 4 + 2]; // R
-        }
-        // padding bytes are already zero
+    // ── 1. BGRA 像素 → RGB 数据（mtmd_bitmap 需要 RGBRGBRGB 格式） ──
+    std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
+    for (int i = 0; i < width * height; i++) {
+        rgb[i * 3 + 0] = bgra_pixels[i * 4 + 2]; // R (from BGRA offset 2)
+        rgb[i * 3 + 1] = bgra_pixels[i * 4 + 1]; // G
+        rgb[i * 3 + 2] = bgra_pixels[i * 4 + 0]; // B (from BGRA offset 0)
     }
 
-    // ── 2. 使用 llava API 编码图像 → embedding ──
-    // llava_image_embed_make_with_bytes 内部调用 clip_image_load_from_bytes
-    // 解码 BMP，然后预处理 + ViT 前向传播，返回完整的 embedding
-    llava_image_embed* embed = llava_image_embed_make_with_bytes(
-        clipCtx_, config_.n_threads, bmp.data(), static_cast<int>(bmp.size()));
-
-    if (!embed) {
-        return makeFallbackJson("图像编码失败");
+    // ── 2. 创建 mtmd bitmap（直接 RGB 数据，无需 BMP 编码） ──
+    mtmd_bitmap* bitmap = mtmd_bitmap_init(
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        rgb.data());
+    if (!bitmap) {
+        return makeFallbackJson("mtmd_bitmap_init 失败");
     }
 
-    // ── 3. 拼接多模态上下文：系统提示 + 图像 embedding + 用户提示 ──
-
-    // 3a. Eval 系统提示（文本 token 写入 KV 缓存）
-    if (!evalText(SYSTEM_PROMPT, n_past, /*add_bos=*/ true)) {
-        llava_image_embed_free(embed);
-        return makeFallbackJson("系统提示 tokenize/eval 失败");
-    }
-
-    // 3b. Eval 图像 embedding（直接将 float embedding 写入 KV 缓存）
-    // llava_eval_image_embed 内部按 n_batch 分批调用 llama_decode
-    // 使用 batch.embd（而非 batch.token）直接传入浮点 embedding
-    if (!llava_eval_image_embed(ctx_, embed, config_.n_batch, &n_past)) {
-        llava_image_embed_free(embed);
-        return makeFallbackJson("图像 embedding eval 失败");
-    }
-    llava_image_embed_free(embed);  // embedding 已写入 KV 缓存，释放
-
-    // 3c. Eval 用户提示（图像后的文本 token）
-    std::string final_prompt = "\n";
+    // ── 3. 构建包含图像标记的提示词 ──
+    const char* marker = mtmd_default_marker();
+    std::string prompt_text;
+    prompt_text += "<|im_start|>system\n";
+    prompt_text += SYSTEM_PROMPT;
+    prompt_text += "<|im_end|>\n<|im_start|>user\n";
+    prompt_text += marker;  // 图像标记，mtmd 会替换为图像 token
+    prompt_text += "\n";
     if (!user_prompt.empty()) {
-        final_prompt += user_prompt + "\n";
+        prompt_text += user_prompt + "\n";
     }
-    final_prompt += "Analyze the game screenshot and respond with JSON:\n";
+    prompt_text += "Analyze the game screenshot and respond with JSON:";
+    prompt_text += "<|im_end|>\n<|im_start|>assistant\n";
 
-    if (!evalText(final_prompt, n_past, /*add_bos=*/ false)) {
-        return makeFallbackJson("用户提示 eval 失败");
+    // ── 4. 使用 mtmd 对文本 + 图像进行统一 tokenize ──
+    mtmd_input_text input_text;
+    input_text.text          = prompt_text.c_str();
+    input_text.add_special   = true;
+    input_text.parse_special = true;
+
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap* bitmap_ptr = bitmap;
+    int32_t tok_res = mtmd_tokenize(mtmdCtx_, chunks, &input_text, &bitmap_ptr, 1);
+
+    mtmd_bitmap_free(bitmap);  // tokenize 后不再需要原始 bitmap
+
+    if (tok_res != 0) {
+        mtmd_input_chunks_free(chunks);
+        return makeFallbackJson("mtmd_tokenize 失败, code=" + std::to_string(tok_res));
     }
 
-    // ── 4. 自回归生成循环 ──
-    // 每次从 logits 中采样一个 token，追加到输出，直到遇到 EOS 或达到上限
+    // ── 5. 一次性 eval 所有 chunks（文本 + 图像 embedding） ──
+    llama_pos n_past = 0;
+    llama_pos new_n_past = 0;
+    int32_t eval_res = mtmd_helper_eval_chunks(
+        mtmdCtx_, ctx_, chunks,
+        n_past,              // 起始位置
+        0,                   // seq_id
+        config_.n_batch,     // n_batch
+        true,                // logits_last
+        &new_n_past);
+
+    mtmd_input_chunks_free(chunks);
+
+    if (eval_res != 0) {
+        return makeFallbackJson("mtmd_helper_eval_chunks 失败, code=" + std::to_string(eval_res));
+    }
+    n_past = new_n_past;
+
+    // ── 6. 自回归生成循环 ──
     std::string output;
-    output.reserve(config_.max_tokens * 4);  // 预分配，减少 realloc
+    output.reserve(config_.max_tokens * 4);
 
-    const int n_vocab = llama_n_vocab(model_);
+    // 分配可复用的单 token batch
+    llama_batch batch = llama_batch_init(1, 0, 1);
 
     for (int i = 0; i < config_.max_tokens; i++) {
-        // 获取最后一个位置的 logits（shape: [n_vocab]）
-        float* logits = llama_get_logits_ith(ctx_, -1);
-        if (!logits) break;
+        // 使用采样链从 logits 中采样
+        llama_token new_token = llama_sampler_sample(sampler_, ctx_, -1);
 
-        // ── 构建候选 token 数组 ──
-        std::vector<llama_token_data> candidates(n_vocab);
-        for (int j = 0; j < n_vocab; j++) {
-            candidates[j] = llama_token_data{ j, logits[j], 0.0f };
-        }
-        llama_token_data_array candidates_p = {
-            candidates.data(),
-            static_cast<size_t>(n_vocab),
-            false  // 未排序
-        };
-
-        // ── 采样策略：低温 + top-k + top-p ──
-        // 低温度（0.1）确保输出高度确定，适合结构化 JSON
-        llama_sample_temp(ctx_, &candidates_p, config_.temperature);
-        llama_sample_top_k(ctx_, &candidates_p, 40, 1);
-        llama_sample_top_p(ctx_, &candidates_p, 0.95f, 1);
-
-        // 从过滤后的候选中采样
-        llama_token new_token = llama_sample_token(ctx_, &candidates_p);
-
-        // 检查是否为终止 token（EOS 或其他 end-of-generation 标记）
-        if (llama_token_is_eog(model_, new_token)) {
+        // 检查是否为终止 token
+        if (llama_vocab_is_eog(vocab, new_token)) {
             break;
         }
 
-        // ── 将 token ID 转为文本片段 ──
+        // 将 token ID 转为文本片段
         char buf[256];
-        int n = llama_token_to_piece(model_, new_token, buf, sizeof(buf), 0, true);
+        int n = llama_token_to_piece(vocab, new_token, buf, sizeof(buf), 0, true);
         if (n > 0) {
             output.append(buf, n);
         }
 
-        // ── 将生成的 token 送回模型进行下一步 decode ──
-        // 使用 llama_batch_get_one 创建单 token 的 batch
-        llama_batch batch = llama_batch_get_one(&new_token, 1, n_past, 0);
+        // 准备单 token batch 送回模型
+        batch.n_tokens       = 1;
+        batch.token[0]       = new_token;
+        batch.pos[0]         = n_past;
+        batch.n_seq_id[0]    = 1;
+        batch.seq_id[0][0]   = 0;
+        batch.logits[0]      = 1;  // 需要这个位置的 logits
+
         if (llama_decode(ctx_, batch) != 0) {
             setError("llama_decode 失败（生成阶段）");
             break;
         }
         n_past++;
 
-        // ── 提前终止：检测到完整的 JSON 对象闭合 ──
-        // 当检测到 "}" 时，可以提前停止生成，节省推理时间
+        // 提前终止：检测到完整的 JSON 对象闭合
         if (!output.empty() && output.back() == '}') {
-            // 验证括号平衡
             int depth = 0;
             for (char c : output) {
                 if (c == '{') depth++;
                 else if (c == '}') depth--;
             }
-            if (depth == 0) break;  // JSON 对象完整闭合
+            if (depth == 0) break;
         }
     }
 
-    // 如果输出为空，返回 fallback
+    llama_batch_free(batch);
+
     if (output.empty()) {
         return makeFallbackJson("模型未生成任何输出");
     }
 
     return output;
-}
-
-// ============================================================
-//  辅助：Tokenize + Eval 一段文本
-//
-//  将文本字符串转为 token 序列，分批送入 llama_decode
-//  写入 KV 缓存后 n_past 相应递增
-// ============================================================
-bool VlmEngine::evalText(const std::string& text, int& n_past, bool add_bos) {
-    // ── Tokenize ──
-    // 先以 n_tokens_max=0 调用获取所需的 token 数量（返回负值 = 实际数量的相反数）
-    int n_tokens = llama_tokenize(
-        model_, text.c_str(), static_cast<int>(text.size()),
-        nullptr, 0, add_bos, /*parse_special=*/ true);
-
-    // llama_tokenize 返回负数表示需要的 buffer 大小
-    if (n_tokens < 0) n_tokens = -n_tokens;
-
-    std::vector<llama_token> tokens(n_tokens);
-    int actual = llama_tokenize(
-        model_, text.c_str(), static_cast<int>(text.size()),
-        tokens.data(), n_tokens, add_bos, /*parse_special=*/ true);
-
-    if (actual < 0) {
-        setError("llama_tokenize 失败: text_len=" + std::to_string(text.size()));
-        return false;
-    }
-    tokens.resize(actual);
-
-    // ── 分批 Eval ──
-    // 按 n_batch 大小分批调用 llama_decode，将 token 写入 KV 缓存
-    for (int i = 0; i < actual; i += config_.n_batch) {
-        int n_eval = std::min(config_.n_batch, actual - i);
-
-        llama_batch batch = llama_batch_get_one(
-            tokens.data() + i, n_eval, n_past, /*seq_id=*/ 0);
-
-        if (llama_decode(ctx_, batch) != 0) {
-            setError("llama_decode 失败: n_past=" + std::to_string(n_past));
-            return false;
-        }
-        n_past += n_eval;
-    }
-
-    return true;
 }
 
 // ============================================================

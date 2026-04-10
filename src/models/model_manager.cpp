@@ -22,35 +22,35 @@ std::vector<ModelEntry> ModelManager::getDefaultModels() {
     return {
         {
             "Qwen2.5-VL-3B Instruct Q4_K_M",
-            "3B params, 4-bit quantized, ~2.2 GB VRAM",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf",
-            "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-            "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf"
+            "3B, 4-bit, ~1.9 GB (Mungert)",
+            "https://huggingface.co/Mungert/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-q4_k_m.gguf",
+            "https://huggingface.co/Mungert/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-mmproj-f16.gguf",
+            "Qwen2.5-VL-3B-Instruct-q4_k_m.gguf",
+            "Qwen2.5-VL-3B-Instruct-mmproj-f16.gguf"
         },
         {
             "Qwen2.5-VL-3B Instruct Q8_0",
-            "3B params, 8-bit quantized, ~3.5 GB VRAM",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf",
-            "Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
-            "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf"
+            "3B, 8-bit, ~3.3 GB (Mungert)",
+            "https://huggingface.co/Mungert/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-q8_0.gguf",
+            "https://huggingface.co/Mungert/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-mmproj-f16.gguf",
+            "Qwen2.5-VL-3B-Instruct-q8_0.gguf",
+            "Qwen2.5-VL-3B-Instruct-mmproj-f16.gguf"
         },
         {
             "Qwen2.5-VL-7B Instruct Q4_K_M",
-            "7B params, 4-bit quantized, ~5.0 GB VRAM",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
+            "7B, 4-bit, ~4.4 GB (unsloth)",
+            "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+            "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-BF16.gguf",
             "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-            "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf"
+            "Qwen2.5-VL-7B-mmproj-BF16.gguf"
         },
         {
             "Qwen2.5-VL-7B Instruct Q8_0",
-            "7B params, 8-bit quantized, ~8.0 GB VRAM",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q8_0.gguf",
-            "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
+            "7B, 8-bit, ~7.5 GB (unsloth)",
+            "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q8_0.gguf",
+            "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-BF16.gguf",
             "Qwen2.5-VL-7B-Instruct-Q8_0.gguf",
-            "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf"
+            "Qwen2.5-VL-7B-mmproj-BF16.gguf"
         }
     };
 }
@@ -138,7 +138,8 @@ bool ModelManager::downloadFile(
     const std::string& destPath,
     ProgressCallback progress,
     std::atomic<bool>& cancelled,
-    std::string& errorOut)
+    std::string& errorOut,
+    const std::string& proxy)
 {
     errorOut.clear();
 
@@ -146,12 +147,19 @@ bool ModelManager::downloadFile(
     std::filesystem::create_directories(
         std::filesystem::path(destPath).parent_path());
 
-    // 打开 Internet 会话
+    // 打开 Internet 会话（支持 HTTP 代理）
     INetHandle session;
-    session.h = InternetOpenA(
-        "NaviVision/1.0",
-        INTERNET_OPEN_TYPE_PRECONFIG,
-        nullptr, nullptr, 0);
+    if (!proxy.empty()) {
+        session.h = InternetOpenA(
+            "NaviVision/1.0",
+            INTERNET_OPEN_TYPE_PROXY,
+            proxy.c_str(), nullptr, 0);
+    } else {
+        session.h = InternetOpenA(
+            "NaviVision/1.0",
+            INTERNET_OPEN_TYPE_PRECONFIG,
+            nullptr, nullptr, 0);
+    }
     if (!session) {
         errorOut = "InternetOpen failed: " + getWinINetError(GetLastError());
         return false;

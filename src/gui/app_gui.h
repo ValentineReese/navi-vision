@@ -108,6 +108,7 @@ private:
     int selectedModelIdx_ = 0;
     char customModelUrl_[1024] = {};
     char customMmprojUrl_[1024] = {};
+    char proxyAddr_[256] = "127.0.0.1:7890";
     std::string modelsDir_;
 
     // ── Download state ──

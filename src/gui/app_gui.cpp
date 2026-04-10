@@ -510,6 +510,12 @@ void AppGui::renderModelSettings() {
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##MmprojURL", customMmprojUrl_, sizeof(customMmprojUrl_));
 
+    ImGui::Spacing();
+    ImGui::Text("HTTP Proxy (optional):");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##Proxy", proxyAddr_, sizeof(proxyAddr_));
+    ImGui::TextDisabled("e.g. 127.0.0.1:7890  (leave empty for direct)");
+
     ImGui::TextDisabled("Target: %s", modelsDir_.c_str());
 
     ImGui::Separator();
@@ -632,10 +638,12 @@ void AppGui::startModelDownload() {
         downloadStatus_.clear();
     }
 
+    std::string proxyStr = proxyAddr_;
+
     if (downloadThread_.joinable()) downloadThread_.join();
 
     downloadThread_ = std::thread(
-        [this, modelUrl, mmprojUrl, modelDest, mmprojDest]()
+        [this, modelUrl, mmprojUrl, modelDest, mmprojDest, proxyStr]()
     {
         std::string dlError;
 
@@ -652,7 +660,7 @@ void AppGui::startModelDownload() {
                 if (total > 0)
                     downloadProgress_.store(
                         static_cast<float>(downloaded) / total * 0.5f);
-            }, cancelDownload_, dlError);
+            }, cancelDownload_, dlError, proxyStr);
 
         if (!ok) {
             std::lock_guard<std::mutex> lock(downloadMsgMutex_);
@@ -681,7 +689,7 @@ void AppGui::startModelDownload() {
                 if (total > 0)
                     downloadProgress_.store(
                         0.5f + static_cast<float>(downloaded) / total * 0.5f);
-            }, cancelDownload_, dlError);
+            }, cancelDownload_, dlError, proxyStr);
 
         if (!ok) {
             std::lock_guard<std::mutex> lock(downloadMsgMutex_);

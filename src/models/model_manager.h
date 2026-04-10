@@ -41,19 +41,21 @@ public:
     /// 格式化字节数为人类可读字符串
     static std::string formatBytes(size_t bytes);
 
-    /// 下载单个文件（支持 HTTPS，自动跟随重定向）
+    /// 下载单个文件（支持 HTTPS，自动跟随重定向，可选 HTTP 代理）
     /// @param url       完整下载 URL
     /// @param destPath  本地保存路径
     /// @param progress  进度回调 (已下载字节, 总字节)；总字节可能为 0（未知）
     /// @param cancelled 外部取消信号
     /// @param errorOut  失败时写入错误详情
+    /// @param proxy     HTTP 代理地址，如 "127.0.0.1:7890"；空字符串表示不使用代理
     /// @return true 表示下载成功
     static bool downloadFile(
         const std::string& url,
         const std::string& destPath,
         ProgressCallback progress,
         std::atomic<bool>& cancelled,
-        std::string& errorOut);
+        std::string& errorOut,
+        const std::string& proxy = "");
 };
 
 } // namespace navi

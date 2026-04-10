@@ -12,10 +12,11 @@
 #include <queue>
 #include <atomic>
 
-// ── llama.cpp 前向声明（避免在头文件暴露底层实现细节） ──
+// ── llama.cpp / mtmd 前向声明（避免在头文件暴露底层实现细节） ──
 struct llama_model;
 struct llama_context;
-struct clip_ctx;
+struct llama_sampler;
+struct mtmd_context;
 
 namespace navi {
 
@@ -87,9 +88,6 @@ private:
         int width, int height,
         const std::string& user_prompt);
 
-    // ── 辅助：Tokenize 并 Eval 一段文本 ──
-    bool evalText(const std::string& text, int& n_past, bool add_bos);
-
     // ── 辅助：生成安全的 Fallback JSON ──
     static std::string makeFallbackJson(const std::string& reason);
 
@@ -97,9 +95,10 @@ private:
     VlmConfig config_;
 
     // ── llama.cpp 核心对象 ──
-    llama_model*   model_   = nullptr;   // 主 LLM 模型
-    llama_context* ctx_     = nullptr;   // LLM 推理上下文
-    clip_ctx*      clipCtx_ = nullptr;   // CLIP 视觉编码器
+    llama_model*    model_    = nullptr;   // 主 LLM 模型
+    llama_context*  ctx_      = nullptr;   // LLM 推理上下文
+    mtmd_context*   mtmdCtx_  = nullptr;   // 多模态视觉编码器（替代旧版 CLIP）
+    llama_sampler*  sampler_  = nullptr;   // 采样链（temp + top_k + top_p + dist）
 
     // ── 线程安全 ──
     std::mutex     inferenceMutex_;  // 保证同一时刻只有一次推理

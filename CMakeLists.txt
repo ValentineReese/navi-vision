@@ -16,39 +16,21 @@ find_package(imgui CONFIG REQUIRED)
 
 # llama.cpp — 作为子目录引入，提供 LLM + 多模态推理
 # 关闭不需要的选项以加速构建
-# 注意：llama.cpp 使用 C++11/17，需要避免 C++20 的 char8_t 破坏性变更
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/../llama.cpp ${CMAKE_BINARY_DIR}/llama.cpp)
 
-# llava (CLIP + LLaVA 多模态) — 需要手动引入，因为关闭了 examples 构建
-add_library(llava OBJECT
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava/llava.cpp
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava/llava.h
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava/clip.cpp
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava/clip.h
-)
-target_link_libraries(llava PRIVATE ggml llama ${CMAKE_THREAD_LIBS_INIT})
-target_include_directories(llava PUBLIC
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/include
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/ggml/include
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/common
-)
-target_compile_features(llava PRIVATE cxx_std_11)
-if(MSVC)
-    target_compile_options(llava PRIVATE /utf-8 /W3)
+# mtmd (多模态) — 引入 tools/mtmd 子目录
+# EXCLUDE_FROM_ALL 阻止 CLI 可执行文件（需要 common 库）被默认构建
+# mtmd 库本身仍会作为 NaviVision 的依赖被构建
+if (NOT LLAMA_INSTALL_VERSION)
+    set(LLAMA_INSTALL_VERSION "0.0.0")
 endif()
-
-add_library(llava_static STATIC $<TARGET_OBJECTS:llava>)
-target_include_directories(llava_static PUBLIC
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/include
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/ggml/include
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/common
-)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../llama.cpp/tools/mtmd ${CMAKE_BINARY_DIR}/mtmd EXCLUDE_FROM_ALL)
 
 # ============================================================
 # 主程序：NaviVision
@@ -69,14 +51,14 @@ target_include_directories(NaviVision PRIVATE
     src
     ${CMAKE_SOURCE_DIR}/../llama.cpp/include
     ${CMAKE_SOURCE_DIR}/../llama.cpp/ggml/include
-    ${CMAKE_SOURCE_DIR}/../llama.cpp/examples/llava
+    ${CMAKE_SOURCE_DIR}/../llama.cpp/tools/mtmd
     ${CMAKE_SOURCE_DIR}/../llama.cpp/common
 )
 
 target_link_libraries(NaviVision PRIVATE
     imgui::imgui
     llama
-    llava_static
+    mtmd
     ggml
     d3d11
     dxgi
@@ -102,9 +84,15 @@ endif()
 # 构建后自动复制 DLL 到 NaviVision.exe 所在目录
 add_custom_command(TARGET NaviVision POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:llama> $<TARGET_FILE_DIR:NaviVision>
+        $<TARGET_FILE:llama>    $<TARGET_FILE_DIR:NaviVision>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:ggml>  $<TARGET_FILE_DIR:NaviVision>
+        $<TARGET_FILE:ggml>     $<TARGET_FILE_DIR:NaviVision>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:ggml-base> $<TARGET_FILE_DIR:NaviVision>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:ggml-cpu>  $<TARGET_FILE_DIR:NaviVision>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:mtmd>     $<TARGET_FILE_DIR:NaviVision>
 )
 
 # ============================================================
@@ -129,3 +117,51 @@ if(MSVC)
         NOMINMAX
     )
 endif()
+
+# ============================================================
+# VLM 加载测试：VlmLoadTest（需要 llama.cpp 链接）
+# ============================================================
+add_executable(VlmLoadTest
+    src/test/test_vlm_load.cpp
+    src/inference/vlm_engine.cpp
+    src/inference/inference_engine.cpp
+    src/models/model_manager.cpp
+)
+
+target_include_directories(VlmLoadTest PRIVATE
+    src
+    ${CMAKE_SOURCE_DIR}/../llama.cpp/include
+    ${CMAKE_SOURCE_DIR}/../llama.cpp/ggml/include
+    ${CMAKE_SOURCE_DIR}/../llama.cpp/tools/mtmd
+    ${CMAKE_SOURCE_DIR}/../llama.cpp/common
+)
+
+target_link_libraries(VlmLoadTest PRIVATE
+    llama
+    mtmd
+    ggml
+    wininet
+)
+
+set_target_properties(VlmLoadTest PROPERTIES CXX_STANDARD 20)
+
+if(MSVC)
+    target_compile_options(VlmLoadTest PRIVATE /utf-8 /W4)
+    target_compile_definitions(VlmLoadTest PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+endif()
+
+add_custom_command(TARGET VlmLoadTest POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:llama>    $<TARGET_FILE_DIR:VlmLoadTest>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:ggml>     $<TARGET_FILE_DIR:VlmLoadTest>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:ggml-base> $<TARGET_FILE_DIR:VlmLoadTest>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:ggml-cpu>  $<TARGET_FILE_DIR:VlmLoadTest>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:mtmd>     $<TARGET_FILE_DIR:VlmLoadTest>
+)
