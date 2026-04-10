@@ -18,6 +18,7 @@
 #include "../capture/wgc_capture.h"
 #include "../capture/window_enumerator.h"
 #include "../inference/inference_engine.h"
+#include "../models/model_manager.h"
 
 namespace navi {
 
@@ -48,6 +49,9 @@ private:
     void renderPreview();
     void renderAIPanel();
     void renderStatusBar();
+    void renderModelSettings();
+    void startModelDownload();
+    void startModelLoad();
 
     // ── 眼睛/话筒的自定义图标绘制 ──
     void drawEyeButton(const char* label, bool isOpen, ImVec2 size);
@@ -97,6 +101,32 @@ private:
     std::atomic<bool> hasNewResult_{ false };
 
     void runInferenceAsync(std::vector<uint8_t> pixels, int width, int height);
+
+    // ── Model Settings UI ──
+    bool showModelSettings_ = false;
+    std::vector<ModelEntry> defaultModels_;
+    int selectedModelIdx_ = 0;
+    char customModelUrl_[1024] = {};
+    char customMmprojUrl_[1024] = {};
+    std::string modelsDir_;
+
+    // ── Download state ──
+    std::thread downloadThread_;
+    std::atomic<bool> downloading_{false};
+    std::atomic<bool> cancelDownload_{false};
+    std::atomic<float> downloadProgress_{0.0f};
+    std::atomic<size_t> dlBytesDown_{0};
+    std::atomic<size_t> dlBytesTotal_{0};
+    std::string downloadStatus_;
+    std::mutex downloadMsgMutex_;
+
+    // ── Model loading state ──
+    std::thread modelLoadThread_;
+    std::atomic<bool> modelLoading_{false};
+    std::atomic<bool> modelLoadDone_{false};
+    std::shared_ptr<IInferenceEngine> pendingEngine_;
+    std::mutex modelLoadMutex_;
+    std::string modelLoadError_;
 };
 
 } // namespace navi

@@ -1,6 +1,8 @@
 #include "app_gui.h"
+#include "../inference/vlm_engine.h"
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 
 namespace navi {
 
@@ -18,9 +20,22 @@ AppGui::AppGui(std::shared_ptr<WgcCapture>       capture,
     , engine_(std::move(engine))
     , device_(device)
     , context_(context) {
+    defaultModels_ = ModelManager::getDefaultModels();
+    modelsDir_ = ModelManager::getModelsDir();
+    if (!defaultModels_.empty()) {
+        snprintf(customModelUrl_, sizeof(customModelUrl_), "%s",
+                 defaultModels_[0].model_url.c_str());
+        snprintf(customMmprojUrl_, sizeof(customMmprojUrl_), "%s",
+                 defaultModels_[0].mmproj_url.c_str());
+    }
 }
 
 AppGui::~AppGui() {
+    cancelDownload_.store(true);
+    if (downloadThread_.joinable())
+        downloadThread_.join();
+    if (modelLoadThread_.joinable())
+        modelLoadThread_.join();
     // 等待推理线程结束
     if (inferenceThread_.joinable())
         inferenceThread_.join();
@@ -33,6 +48,18 @@ AppGui::~AppGui() {
 // ============================================================
 
 void AppGui::render() {
+    // Handle pending model swap from background load thread
+    if (modelLoadDone_.load()) {
+        {
+            std::lock_guard<std::mutex> lock(modelLoadMutex_);
+            if (pendingEngine_) {
+                engine_ = std::move(pendingEngine_);
+            }
+        }
+        modelLoadDone_.store(false);
+        modelLoading_.store(false);
+    }
+
     // 每帧只读取一次 FrameBuffer，缓存结果供所有子模块使用
     cachedFrame_ = visionActive_ ? buffer_->read() : nullptr;
 
@@ -41,6 +68,7 @@ void AppGui::render() {
         renderPreview();
         renderAIPanel();
     }
+    renderModelSettings();
 }
 
 // ============================================================
@@ -100,6 +128,18 @@ void AppGui::renderControlPanel() {
 
     // ── 状态栏 ──
     renderStatusBar();
+
+    // ── 模型设置入口 ──
+    ImGui::Separator();
+    if (engine_) {
+        ImGui::TextDisabled("Engine: %s", engine_->engine_name().c_str());
+    }
+    if (modelLoading_.load()) {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f), "Loading model...");
+    }
+    if (ImGui::Button("Model Settings", ImVec2(-1, 28))) {
+        showModelSettings_ = !showModelSettings_;
+    }
 
     // 窗口选择弹窗必须在同一个 ImGui 窗口的 ID 栈内渲染
     renderWindowSelector();
@@ -393,8 +433,8 @@ void AppGui::runInferenceAsync(std::vector<uint8_t> pixels, int width, int heigh
 
     inferenceRunning_.store(true);
 
-    inferenceThread_ = std::thread([this, px = std::move(pixels), width, height]() {
-        std::string raw = engine_->analyze_frame(px, width, height, "");
+    inferenceThread_ = std::thread([this, eng = engine_, px = std::move(pixels), width, height]() {
+        std::string raw = eng->analyze_frame(px, width, height, "");
         GameStateData result = parse_ai_response(raw);
 
         {
@@ -403,6 +443,310 @@ void AppGui::runInferenceAsync(std::vector<uint8_t> pixels, int width, int heigh
         }
         hasNewResult_.store(true);
         inferenceRunning_.store(false);
+    });
+}
+
+// ============================================================
+//  模型设置窗口
+// ============================================================
+
+void AppGui::renderModelSettings() {
+    if (!showModelSettings_) return;
+
+    ImGui::SetNextWindowPos(ImVec2(200, 50), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560, 500), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Model Settings", &showModelSettings_)) {
+        ImGui::End();
+        return;
+    }
+
+    // ── 预设模型选择 ──
+    ImGui::Text("Preset Models (HuggingFace):");
+    if (ImGui::BeginCombo("##PresetCombo",
+                          defaultModels_[selectedModelIdx_].name.c_str()))
+    {
+        for (int i = 0; i < static_cast<int>(defaultModels_.size()); i++) {
+            bool selected = (i == selectedModelIdx_);
+            if (ImGui::Selectable(defaultModels_[i].name.c_str(), selected)) {
+                selectedModelIdx_ = i;
+                snprintf(customModelUrl_, sizeof(customModelUrl_), "%s",
+                         defaultModels_[i].model_url.c_str());
+                snprintf(customMmprojUrl_, sizeof(customMmprojUrl_), "%s",
+                         defaultModels_[i].mmproj_url.c_str());
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", defaultModels_[i].description.c_str());
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::TextDisabled("%s", defaultModels_[selectedModelIdx_].description.c_str());
+
+    // 根据当前 URL 检查本地文件是否存在
+    std::string modelFname  = ModelManager::filenameFromUrl(customModelUrl_);
+    std::string mmprojFname = ModelManager::filenameFromUrl(customMmprojUrl_);
+    auto localModel  = std::filesystem::path(modelsDir_) / modelFname;
+    auto localMmproj = std::filesystem::path(modelsDir_) / mmprojFname;
+    bool filesExist  = std::filesystem::exists(localModel) &&
+                       std::filesystem::exists(localMmproj);
+
+    if (filesExist) {
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Status: Downloaded");
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Status: Not Downloaded");
+    }
+
+    ImGui::Separator();
+
+    // ── URL 输入（可编辑，支持自定义 URL） ──
+    ImGui::Text("Model URL:");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##ModelURL", customModelUrl_, sizeof(customModelUrl_));
+
+    ImGui::Text("Vision Projector URL:");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##MmprojURL", customMmprojUrl_, sizeof(customMmprojUrl_));
+
+    ImGui::TextDisabled("Target: %s", modelsDir_.c_str());
+
+    ImGui::Separator();
+
+    // ── 下载区域 ──
+    if (downloading_.load()) {
+        float progress = downloadProgress_.load();
+        ImGui::ProgressBar(progress, ImVec2(-1, 0));
+
+        size_t downloaded = dlBytesDown_.load();
+        size_t total      = dlBytesTotal_.load();
+        std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+        if (total > 0) {
+            ImGui::Text("%s  (%s / %s)",
+                        downloadStatus_.c_str(),
+                        ModelManager::formatBytes(downloaded).c_str(),
+                        ModelManager::formatBytes(total).c_str());
+        } else if (downloaded > 0) {
+            ImGui::Text("%s  (%s)",
+                        downloadStatus_.c_str(),
+                        ModelManager::formatBytes(downloaded).c_str());
+        } else {
+            ImGui::Text("%s", downloadStatus_.c_str());
+        }
+
+        if (ImGui::Button("Cancel", ImVec2(-1, 28))) {
+            cancelDownload_.store(true);
+        }
+    } else {
+        bool urlsValid = customModelUrl_[0] != '\0' && customMmprojUrl_[0] != '\0';
+        ImGui::BeginDisabled(!urlsValid || modelLoading_.load());
+        if (ImGui::Button("Download", ImVec2(-1, 28))) {
+            startModelDownload();
+        }
+        ImGui::EndDisabled();
+
+        // 显示上次下载状态（失败信息用红色）
+        {
+            std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+            if (!downloadStatus_.empty()) {
+                bool isError = downloadStatus_.find("failed") != std::string::npos
+                            || downloadStatus_.find("error")  != std::string::npos
+                            || downloadStatus_.find("HTTP")   != std::string::npos;
+                if (isError) {
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                                          ImVec4(1.0f, 0.35f, 0.3f, 1.0f));
+                }
+                ImGui::TextWrapped("%s", downloadStatus_.c_str());
+                if (isError) {
+                    ImGui::PopStyleColor();
+                }
+            }
+        }
+    }
+
+    ImGui::Separator();
+
+    // ── 加载 / 卸载 ──
+    if (modelLoading_.load()) {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f), "Loading model...");
+    } else {
+        float halfWidth = ImGui::GetContentRegionAvail().x * 0.5f - 4;
+
+        ImGui::BeginDisabled(!filesExist || downloading_.load());
+        if (ImGui::Button("Load Model", ImVec2(halfWidth, 30))) {
+            startModelLoad();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+
+        bool isVlm = engine_ && engine_->engine_name() != "MockInference";
+        ImGui::BeginDisabled(!isVlm || inferenceRunning_.load());
+        if (ImGui::Button("Unload", ImVec2(-1, 30))) {
+            engine_ = std::make_shared<MockInference>();
+        }
+        ImGui::EndDisabled();
+    }
+
+    // 加载错误信息
+    {
+        std::lock_guard<std::mutex> lock(modelLoadMutex_);
+        if (!modelLoadError_.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                               "%s", modelLoadError_.c_str());
+        }
+    }
+
+    // 当前引擎信息
+    if (engine_) {
+        ImGui::TextDisabled("Current: %s", engine_->engine_name().c_str());
+    }
+
+    ImGui::End();
+}
+
+// ============================================================
+//  后台下载（model + mmproj 两阶段）
+// ============================================================
+
+void AppGui::startModelDownload() {
+    if (downloading_.load()) return;
+
+    std::string modelUrl  = customModelUrl_;
+    std::string mmprojUrl = customMmprojUrl_;
+    if (modelUrl.empty() || mmprojUrl.empty()) return;
+
+    std::string modelDest  = (std::filesystem::path(modelsDir_) /
+                              ModelManager::filenameFromUrl(modelUrl)).string();
+    std::string mmprojDest = (std::filesystem::path(modelsDir_) /
+                              ModelManager::filenameFromUrl(mmprojUrl)).string();
+
+    downloading_.store(true);
+    cancelDownload_.store(false);
+    downloadProgress_.store(0.0f);
+    dlBytesDown_.store(0);
+    dlBytesTotal_.store(0);
+    {
+        std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+        downloadStatus_.clear();
+    }
+
+    if (downloadThread_.joinable()) downloadThread_.join();
+
+    downloadThread_ = std::thread(
+        [this, modelUrl, mmprojUrl, modelDest, mmprojDest]()
+    {
+        std::string dlError;
+
+        // Phase 1: 下载主模型
+        {
+            std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+            downloadStatus_ = "Downloading model...";
+        }
+
+        bool ok = ModelManager::downloadFile(modelUrl, modelDest,
+            [this](size_t downloaded, size_t total) {
+                dlBytesDown_.store(downloaded);
+                dlBytesTotal_.store(total);
+                if (total > 0)
+                    downloadProgress_.store(
+                        static_cast<float>(downloaded) / total * 0.5f);
+            }, cancelDownload_, dlError);
+
+        if (!ok) {
+            std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+            if (cancelDownload_.load()) {
+                downloadStatus_ = "Download cancelled";
+            } else {
+                downloadStatus_ = "Model download failed:\n" + dlError
+                                + "\nURL: " + modelUrl;
+            }
+            downloading_.store(false);
+            return;
+        }
+
+        // Phase 2: 下载视觉投影器
+        {
+            std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+            downloadStatus_ = "Downloading vision projector...";
+        }
+        dlBytesDown_.store(0);
+        dlBytesTotal_.store(0);
+
+        ok = ModelManager::downloadFile(mmprojUrl, mmprojDest,
+            [this](size_t downloaded, size_t total) {
+                dlBytesDown_.store(downloaded);
+                dlBytesTotal_.store(total);
+                if (total > 0)
+                    downloadProgress_.store(
+                        0.5f + static_cast<float>(downloaded) / total * 0.5f);
+            }, cancelDownload_, dlError);
+
+        if (!ok) {
+            std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+            if (cancelDownload_.load()) {
+                downloadStatus_ = "Download cancelled";
+            } else {
+                downloadStatus_ = "Vision projector download failed:\n" + dlError
+                                + "\nURL: " + mmprojUrl;
+            }
+            downloading_.store(false);
+            return;
+        }
+
+        downloadProgress_.store(1.0f);
+        {
+            std::lock_guard<std::mutex> lock(downloadMsgMutex_);
+            downloadStatus_ = "Download complete!";
+        }
+        downloading_.store(false);
+    });
+}
+
+// ============================================================
+//  后台加载模型（创建 VlmEngine）
+// ============================================================
+
+void AppGui::startModelLoad() {
+    if (modelLoading_.load() || downloading_.load()) return;
+
+    std::string modelPath  = (std::filesystem::path(modelsDir_) /
+                              ModelManager::filenameFromUrl(customModelUrl_)).string();
+    std::string mmprojPath = (std::filesystem::path(modelsDir_) /
+                              ModelManager::filenameFromUrl(customMmprojUrl_)).string();
+
+    if (!std::filesystem::exists(modelPath) ||
+        !std::filesystem::exists(mmprojPath)) return;
+
+    modelLoading_.store(true);
+    {
+        std::lock_guard<std::mutex> lock(modelLoadMutex_);
+        modelLoadError_.clear();
+    }
+
+    if (modelLoadThread_.joinable()) modelLoadThread_.join();
+
+    modelLoadThread_ = std::thread([this, modelPath, mmprojPath]() {
+        VlmConfig cfg;
+        cfg.model_path   = modelPath;
+        cfg.mmproj_path  = mmprojPath;
+        cfg.n_gpu_layers = 99;
+        cfg.n_threads    = 4;
+        cfg.n_ctx        = 4096;
+        cfg.temperature  = 0.1f;
+
+        auto vlm = std::make_shared<VlmEngine>(cfg);
+
+        std::lock_guard<std::mutex> lock(modelLoadMutex_);
+        if (vlm->is_loaded()) {
+            pendingEngine_ = vlm;
+            modelLoadError_.clear();
+        } else {
+            pendingEngine_ = nullptr;
+            modelLoadError_ = "Load failed: " + vlm->last_error();
+        }
+        modelLoadDone_.store(true);
     });
 }
 

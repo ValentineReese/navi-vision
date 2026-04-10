@@ -133,7 +133,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // ── 创建核心模块 ──
     auto frameBuffer = std::make_shared<navi::FrameBuffer>();
     auto capture     = std::make_shared<navi::WgcCapture>(frameBuffer);
-    auto inference   = std::make_shared<navi::MockInference>();
+
+    // 推理引擎：初始使用 Mock，用户可通过 Model Settings 下载并加载 VLM 模型
+    auto inference = std::make_shared<navi::MockInference>();
+
     navi::AppGui gui(capture, frameBuffer, inference, g_pd3dDevice, g_pd3dDeviceContext);
 
     // ── 主渲染循环 ──
