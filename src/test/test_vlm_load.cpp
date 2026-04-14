@@ -5,9 +5,10 @@
 //  failures. Reports detailed error messages from llama.cpp.
 //
 //  Build:  Part of the VlmLoadTest CMake target
-//  Run:    VlmLoadTest.exe  (console output)
+//  Run:    VlmLoadTest  (console output)
 // ============================================================
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -15,6 +16,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#endif
 
 #include <iostream>
 #include <string>

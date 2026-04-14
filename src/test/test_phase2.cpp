@@ -3,7 +3,7 @@
 //
 //  This is a standalone console application that validates:
 //
-//  1. Desktop snapshot capture (BitBlt-based, no WGC needed)
+//  1. Desktop snapshot capture (BitBlt-based on Windows, CGWindowList on macOS)
 //     - Proves that BGR pixel data can be obtained and is valid
 //
 //  2. JSON response parser with sanitization
@@ -17,22 +17,27 @@
 //     - Capture desktop → feed to MockInference → parse → validate
 //
 //  Build:  Part of the NaviVisionTest CMake target
-//  Run:    NaviVisionTest.exe  (console output with PASS/FAIL)
+//  Run:    NaviVisionTest  (console output with PASS/FAIL)
 // ============================================================
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-
 #include <Windows.h>
+#elif defined(__APPLE__)
+#include <CoreGraphics/CoreGraphics.h>
+#endif
+
 #include <iostream>
 #include <string>
 #include <vector>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 
 #include "../core/game_state.h"
 #include "../core/response_parser.h"
@@ -62,11 +67,7 @@ static int g_failed = 0;
     } while (0)
 
 // ============================================================
-//  Desktop Snapshot via BitBlt
-//
-//  Uses GDI BitBlt to capture the entire desktop as a test
-//  data source.  This is independent of WGC and works on all
-//  Windows versions, making it ideal for unit testing.
+//  Desktop Snapshot — 跨平台实现
 // ============================================================
 struct DesktopSnapshot {
     std::vector<uint8_t> pixels;  // BGR format, 3 bytes per pixel
@@ -74,33 +75,31 @@ struct DesktopSnapshot {
     int height = 0;
 };
 
+#ifdef _WIN32
+// ── Windows: GDI BitBlt ──
 static DesktopSnapshot captureDesktop() {
     DesktopSnapshot snap;
 
-    // Get desktop device context
     HDC hdcScreen = GetDC(nullptr);
     HDC hdcMem    = CreateCompatibleDC(hdcScreen);
 
     snap.width  = GetSystemMetrics(SM_CXSCREEN);
     snap.height = GetSystemMetrics(SM_CYSCREEN);
 
-    // Create a compatible bitmap for the screen
     HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, snap.width, snap.height);
     HGDIOBJ hOld    = SelectObject(hdcMem, hBitmap);
 
-    // BitBlt copies the screen to our memory DC
     BitBlt(hdcMem, 0, 0, snap.width, snap.height, hdcScreen, 0, 0, SRCCOPY);
 
-    // Extract pixel data via GetDIBits
     BITMAPINFOHEADER bi = {};
     bi.biSize        = sizeof(bi);
     bi.biWidth       = snap.width;
-    bi.biHeight      = -snap.height;  // Negative = top-down row order
+    bi.biHeight      = -snap.height;
     bi.biPlanes      = 1;
-    bi.biBitCount    = 24;            // 24-bit BGR
+    bi.biBitCount    = 24;
     bi.biCompression = BI_RGB;
 
-    size_t rowStride = ((snap.width * 3 + 3) & ~3);  // DWORD-aligned
+    size_t rowStride = ((snap.width * 3 + 3) & ~3);
     snap.pixels.resize(rowStride * snap.height);
 
     GetDIBits(hdcMem, hBitmap, 0, snap.height,
@@ -108,7 +107,6 @@ static DesktopSnapshot captureDesktop() {
               reinterpret_cast<BITMAPINFO*>(&bi),
               DIB_RGB_COLORS);
 
-    // Convert from DWORD-aligned rows to tightly-packed BGR
     if (rowStride != static_cast<size_t>(snap.width * 3)) {
         std::vector<uint8_t> packed(static_cast<size_t>(snap.width) * snap.height * 3);
         for (int y = 0; y < snap.height; y++) {
@@ -119,7 +117,6 @@ static DesktopSnapshot captureDesktop() {
         snap.pixels = std::move(packed);
     }
 
-    // Cleanup GDI resources
     SelectObject(hdcMem, hOld);
     DeleteObject(hBitmap);
     DeleteDC(hdcMem);
@@ -127,6 +124,50 @@ static DesktopSnapshot captureDesktop() {
 
     return snap;
 }
+
+#elif defined(__APPLE__)
+// ── macOS: CGWindowListCreateImage ──
+static DesktopSnapshot captureDesktop() {
+    DesktopSnapshot snap;
+
+    CGImageRef image = CGWindowListCreateImage(
+        CGRectInfinite,
+        kCGWindowListOptionOnScreenOnly,
+        kCGNullWindowID,
+        kCGWindowImageDefault);
+
+    if (!image) return snap;
+
+    snap.width  = static_cast<int>(CGImageGetWidth(image));
+    snap.height = static_cast<int>(CGImageGetHeight(image));
+
+    // 创建 BGRA 上下文
+    size_t bgraRowBytes = snap.width * 4;
+    std::vector<uint8_t> bgra(bgraRowBytes * snap.height);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+        bgra.data(), snap.width, snap.height, 8, bgraRowBytes,
+        colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+
+    if (ctx) {
+        CGContextDrawImage(ctx, CGRectMake(0, 0, snap.width, snap.height), image);
+        CGContextRelease(ctx);
+
+        // BGRA → BGR
+        snap.pixels.resize(static_cast<size_t>(snap.width) * snap.height * 3);
+        for (int i = 0; i < snap.width * snap.height; i++) {
+            snap.pixels[i * 3 + 0] = bgra[i * 4 + 0]; // B
+            snap.pixels[i * 3 + 1] = bgra[i * 4 + 1]; // G
+            snap.pixels[i * 3 + 2] = bgra[i * 4 + 2]; // R
+        }
+    }
+
+    CGColorSpaceRelease(colorSpace);
+    CGImageRelease(image);
+    return snap;
+}
+#endif
 
 // ============================================================
 //  Test Group 1: Desktop Snapshot Validity

@@ -1,6 +1,7 @@
 #include "app_gui.h"
 #include "../inference/vlm_engine.h"
 #include "../core/log_buffer.h"
+#include "../platform/platform.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -11,16 +12,27 @@ namespace navi {
 //  构造 / 析构
 // ============================================================
 
-AppGui::AppGui(std::shared_ptr<WgcCapture>       capture,
-               std::shared_ptr<FrameBuffer>    buffer,
-               std::shared_ptr<IInferenceEngine> engine,
-               ID3D11Device*                  device,
-               ID3D11DeviceContext*           context)
+#ifdef _WIN32
+AppGui::AppGui(std::shared_ptr<ICaptureEngine>    capture,
+               std::shared_ptr<FrameBuffer>       buffer,
+               std::shared_ptr<IInferenceEngine>  engine,
+               ID3D11Device*                      device,
+               ID3D11DeviceContext*                context)
     : capture_(std::move(capture))
     , buffer_(std::move(buffer))
     , engine_(std::move(engine))
-    , device_(device)
-    , context_(context) {
+    , previewTex_(std::make_unique<PreviewTexture>(device, context))
+{
+#else
+AppGui::AppGui(std::shared_ptr<ICaptureEngine>    capture,
+               std::shared_ptr<FrameBuffer>       buffer,
+               std::shared_ptr<IInferenceEngine>  engine)
+    : capture_(std::move(capture))
+    , buffer_(std::move(buffer))
+    , engine_(std::move(engine))
+    , previewTex_(std::make_unique<PreviewTexture>())
+{
+#endif
     defaultModels_ = ModelManager::getDefaultModels();
     modelsDir_ = ModelManager::getModelsDir();
     if (!defaultModels_.empty()) {
@@ -49,8 +61,7 @@ AppGui::~AppGui() {
     // 等待推理线程结束
     if (inferenceThread_.joinable())
         inferenceThread_.join();
-    previewSRV_.Reset();
-    previewTexture_.Reset();
+    previewTex_.reset();
 }
 
 // ============================================================
@@ -216,14 +227,14 @@ void AppGui::renderWindowSelector() {
         // 窗口列表（可滚动）
         ImGui::BeginChild("WindowList", ImVec2(0, -30), true);
         for (size_t i = 0; i < windowList_.size(); i++) {
-            std::string label = wstringToUtf8(windowList_[i].title);
+            const std::string& label = windowList_[i].title;
             // 添加序号防止 ImGui ID 冲突
             char id[512];
             snprintf(id, sizeof(id), "%s##%zu", label.c_str(), i);
 
             if (ImGui::Selectable(id)) {
                 // 用户选中了目标窗口，启动捕获
-                if (capture_->start(windowList_[i].hwnd, 3.0f)) {
+                if (capture_->start(windowList_[i].handle, 3.0f)) {
                     visionActive_ = true;
                 }
                 showWindowSelector_ = false;
@@ -248,7 +259,7 @@ void AppGui::renderWindowSelector() {
 void AppGui::renderPreview() {
     updatePreviewTexture();
 
-    if (!previewSRV_)
+    if (!previewTex_ || !previewTex_->isValid())
         return;
 
     ImGui::SetNextWindowPos(ImVec2(10, 120), ImGuiCond_FirstUseEver);
@@ -257,8 +268,8 @@ void AppGui::renderPreview() {
 
     // 计算保持宽高比的预览尺寸
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float aspect = (previewHeight_ > 0)
-                       ? static_cast<float>(previewWidth_) / previewHeight_
+    float aspect = (previewTex_->height() > 0)
+                       ? static_cast<float>(previewTex_->width()) / previewTex_->height()
                        : 16.0f / 9.0f;
 
     float dispW = avail.x;
@@ -268,7 +279,7 @@ void AppGui::renderPreview() {
         dispW = dispH * aspect;
     }
 
-    ImGui::Image(static_cast<ImTextureID>(previewSRV_.Get()),
+    ImGui::Image(previewTex_->getImTextureID(),
                  ImVec2(dispW, dispH));
 
     ImGui::End();
@@ -284,51 +295,9 @@ void AppGui::updatePreviewTexture() {
         return;
     lastPreviewTimestamp_ = frame->timestamp;
 
-    // 如果帧尺寸变化，需重建纹理
-    if (frame->width != previewWidth_ || frame->height != previewHeight_) {
-        previewSRV_.Reset();
-        previewTexture_.Reset();
-
-        D3D11_TEXTURE2D_DESC texDesc = {};
-        texDesc.Width            = frame->width;
-        texDesc.Height           = frame->height;
-        texDesc.MipLevels        = 1;
-        texDesc.ArraySize        = 1;
-        texDesc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
-        texDesc.SampleDesc.Count = 1;
-        texDesc.Usage            = D3D11_USAGE_DYNAMIC;
-        texDesc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
-        texDesc.CPUAccessFlags   = D3D11_CPU_ACCESS_WRITE;
-
-        HRESULT hr = device_->CreateTexture2D(
-            &texDesc, nullptr, previewTexture_.GetAddressOf());
-        if (FAILED(hr)) return;
-
-        hr = device_->CreateShaderResourceView(
-            previewTexture_.Get(), nullptr, previewSRV_.GetAddressOf());
-        if (FAILED(hr)) return;
-
-        previewWidth_  = frame->width;
-        previewHeight_ = frame->height;
+    if (previewTex_) {
+        previewTex_->update(frame->pixels.data(), frame->width, frame->height);
     }
-
-    // 将 BGRA 像素数据直接上传到 BGRA 纹理（零转换，仅 memcpy）
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = context_->Map(
-        previewTexture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr)) return;
-
-    const uint8_t* src = frame->pixels.data();
-    uint8_t*       dst = static_cast<uint8_t*>(mapped.pData);
-
-    const size_t rowBytes = static_cast<size_t>(frame->width) * 4;
-    for (int y = 0; y < frame->height; y++) {
-        std::memcpy(dst + y * mapped.RowPitch,
-                    src + y * rowBytes,
-                    rowBytes);
-    }
-
-    context_->Unmap(previewTexture_.Get(), 0);
 }
 
 // ============================================================
@@ -464,24 +433,6 @@ void AppGui::renderStatusBar() {
                                "Error: %s", err.c_str());
         }
     }
-}
-
-// ============================================================
-//  工具函数
-// ============================================================
-
-std::string AppGui::wstringToUtf8(const std::wstring& wstr) {
-    if (wstr.empty()) return {};
-    int size = WideCharToMultiByte(
-        CP_UTF8, 0,
-        wstr.c_str(), static_cast<int>(wstr.size()),
-        nullptr, 0, nullptr, nullptr);
-    std::string result(size, '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0,
-        wstr.c_str(), static_cast<int>(wstr.size()),
-        result.data(), size, nullptr, nullptr);
-    return result;
 }
 
 // ============================================================

@@ -39,11 +39,11 @@ WgcCapture::~WgcCapture() {
 //  公共接口
 // ============================================================
 
-bool WgcCapture::start(HWND targetHwnd, float targetFps) {
+bool WgcCapture::start(NativeWindowHandle windowHandle, float targetFps) {
     if (capturing_.load())
         return false;
 
-    targetHwnd_   = targetHwnd;
+    targetHwnd_   = reinterpret_cast<HWND>(windowHandle);
     targetFps_    = targetFps;
     stopRequested_ = false;
     initDone_      = false;

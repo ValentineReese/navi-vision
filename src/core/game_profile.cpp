@@ -1,15 +1,9 @@
 #include "game_profile.h"
+#include "../platform/platform.h"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
+#include <filesystem>
 
 namespace navi {
 
@@ -143,10 +137,7 @@ const GameProfile* ProfileManager::getProfile(int index) const {
 
 std::string ProfileManager::getProfilesDir() {
     // exe 旁的 profiles 文件夹
-    wchar_t buf[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    std::filesystem::path exePath(buf);
-    return (exePath.parent_path() / "profiles").string();
+    return (std::filesystem::path(platform::getExecutableDir()) / "profiles").string();
 }
 
 } // namespace navi

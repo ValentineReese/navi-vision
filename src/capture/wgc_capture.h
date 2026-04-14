@@ -31,6 +31,7 @@
 #include <memory>
 #include <string>
 
+#include "capture_engine.h"
 #include "../core/frame_buffer.h"
 
 namespace navi {
@@ -40,29 +41,20 @@ namespace navi {
 /// 使用独立的 D3D11 设备在后台线程中运行，
 /// 通过 WGC API 捕获指定窗口的画面，并以限频方式
 /// （默认 3 FPS）将 BGR 像素数据写入线程安全的 FrameBuffer。
-class WgcCapture {
+class WgcCapture : public ICaptureEngine {
 public:
     explicit WgcCapture(std::shared_ptr<FrameBuffer> buffer);
-    ~WgcCapture();
+    ~WgcCapture() override;
 
     // 禁止拷贝
     WgcCapture(const WgcCapture&)            = delete;
     WgcCapture& operator=(const WgcCapture&) = delete;
 
-    /// 启动对指定窗口的捕获（阻塞直到初始化完成）
-    /// @param targetHwnd 目标窗口句柄
-    /// @param targetFps  目标帧率（建议 2~5 FPS）
-    /// @return 初始化是否成功
-    bool start(HWND targetHwnd, float targetFps = 3.0f);
-
-    /// 停止捕获并释放资源
-    void stop();
-
-    /// 是否正在捕获
-    bool isCapturing() const { return capturing_.load(); }
-
-    /// 获取最近一次的错误信息
-    std::string lastError() const;
+    // ── ICaptureEngine 接口 ──
+    bool start(NativeWindowHandle windowHandle, float targetFps = 3.0f) override;
+    void stop() override;
+    bool isCapturing() const override { return capturing_.load(); }
+    std::string lastError() const override;
 
 private:
     // ── 内部方法 ──

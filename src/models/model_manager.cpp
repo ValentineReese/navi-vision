@@ -1,5 +1,7 @@
 #include "model_manager.h"
+#include "../platform/platform.h"
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -8,6 +10,11 @@
 #endif
 #include <Windows.h>
 #include <wininet.h>
+#pragma comment(lib, "wininet.lib")
+#else
+#include <curl/curl.h>
+#endif
+
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
@@ -76,10 +83,7 @@ std::vector<ModelEntry> ModelManager::getDefaultModels() {
 // ============================================================
 
 std::string ModelManager::getModelsDir() {
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    std::filesystem::path p(exePath);
-    auto dir = p.parent_path() / "models";
+    auto dir = std::filesystem::path(platform::getExecutableDir()) / "models";
     std::filesystem::create_directories(dir);
     return dir.string();
 }
@@ -122,7 +126,12 @@ std::string ModelManager::formatBytes(size_t bytes) {
 }
 
 // ============================================================
-//  WinINet 句柄 RAII 包装
+//  平台相关下载实现
+// ============================================================
+
+#ifdef _WIN32
+// ============================================================
+//  WinINet 句柄 RAII 包装 (Windows)
 // ============================================================
 struct INetHandle {
     HINTERNET h = nullptr;
@@ -137,7 +146,6 @@ static std::string getWinINetError(DWORD err) {
         GetModuleHandleA("wininet.dll"),
         err, 0, buf, sizeof(buf), nullptr);
     if (len > 0) {
-        // 去掉尾部换行
         while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
             buf[--len] = '\0';
         return std::string(buf, len);
@@ -147,7 +155,7 @@ static std::string getWinINetError(DWORD err) {
 }
 
 // ============================================================
-//  文件下载（HTTPS + 重定向 + 进度 + 取消 + 错误详情）
+//  文件下载 — Windows WinINet 实现
 // ============================================================
 bool ModelManager::downloadFile(
     const std::string& url,
@@ -304,5 +312,137 @@ bool ModelManager::downloadFile(
     }
     return true;
 }
+
+#else  // macOS / Linux — libcurl 实现
+
+// ============================================================
+//  libcurl 回调数据
+// ============================================================
+struct CurlWriteData {
+    std::ofstream* outFile;
+    size_t totalWritten;
+    std::atomic<bool>* cancelled;
+    ModelManager::ProgressCallback progress;
+    size_t contentLength;
+};
+
+static size_t curlWriteCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* data = static_cast<CurlWriteData*>(userdata);
+    size_t bytes = size * nmemb;
+
+    if (data->cancelled && data->cancelled->load()) {
+        return 0;  // 返回 0 中止传输
+    }
+
+    data->outFile->write(ptr, static_cast<std::streamsize>(bytes));
+    if (!data->outFile->good()) return 0;
+
+    data->totalWritten += bytes;
+    if (data->progress) {
+        data->progress(data->totalWritten, data->contentLength);
+    }
+    return bytes;
+}
+
+static int curlProgressCallback(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+                                 curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
+    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
+    if (cancelled && cancelled->load()) return 1;  // 非零中止
+    return 0;
+}
+
+// ============================================================
+//  文件下载 — macOS/Linux libcurl 实现
+// ============================================================
+bool ModelManager::downloadFile(
+    const std::string& url,
+    const std::string& destPath,
+    ProgressCallback progress,
+    std::atomic<bool>& cancelled,
+    std::string& errorOut,
+    const std::string& proxy)
+{
+    errorOut.clear();
+
+    std::filesystem::create_directories(
+        std::filesystem::path(destPath).parent_path());
+
+    std::string tempPath = destPath + ".part";
+    std::ofstream outFile(tempPath, std::ios::binary);
+    if (!outFile.is_open()) {
+        errorOut = "Cannot create file: " + tempPath;
+        return false;
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        errorOut = "curl_easy_init failed";
+        outFile.close();
+        return false;
+    }
+
+    CurlWriteData writeData{};
+    writeData.outFile       = &outFile;
+    writeData.totalWritten  = 0;
+    writeData.cancelled     = &cancelled;
+    writeData.progress      = progress;
+    writeData.contentLength = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeData);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NaviVision/1.0");
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancelled);
+
+    if (!proxy.empty()) {
+        curl_easy_setopt(curl, CURLOPT_PROXY, proxy.c_str());
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+
+    outFile.close();
+
+    if (res != CURLE_OK) {
+        std::error_code ec;
+        std::filesystem::remove(tempPath, ec);
+        if (cancelled.load()) {
+            errorOut = "Download cancelled by user";
+        } else {
+            errorOut = std::string("curl error: ") + curl_easy_strerror(res);
+        }
+        curl_easy_cleanup(curl);
+        return false;
+    }
+
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+    curl_easy_cleanup(curl);
+
+    if (httpCode != 200) {
+        std::error_code ec;
+        std::filesystem::remove(tempPath, ec);
+        errorOut = "HTTP " + std::to_string(httpCode);
+        return false;
+    }
+
+    // 原子重命名
+    std::error_code ec;
+    std::filesystem::remove(destPath, ec);
+    std::filesystem::rename(tempPath, destPath, ec);
+    if (ec) {
+        errorOut = "Rename failed: " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+#endif  // _WIN32
 
 } // namespace navi

@@ -1,4 +1,5 @@
 #include "window_enumerator.h"
+#include "../platform/platform.h"
 #include <dwmapi.h>
 
 #pragma comment(lib, "dwmapi.lib")
@@ -28,7 +29,10 @@ BOOL CALLBACK WindowEnumerator::enumCallback(HWND hwnd, LPARAM lParam) {
     wchar_t className[256] = {};
     GetClassNameW(hwnd, className, 256);
 
-    windows->push_back({ hwnd, title, className });
+    windows->push_back(WindowInfo::fromHwnd(
+        hwnd,
+        platform::wstringToUtf8(title),
+        platform::wstringToUtf8(className)));
     return TRUE;
 }
 
