@@ -19,6 +19,14 @@ static std::string cfStringToStdString(CFStringRef cfStr) {
     return {};
 }
 
+bool WindowEnumerator::hasScreenCapturePermission() {
+    return CGPreflightScreenCaptureAccess();
+}
+
+void WindowEnumerator::requestScreenCapturePermission() {
+    CGRequestScreenCaptureAccess();
+}
+
 std::vector<WindowInfo> WindowEnumerator::enumerate() {
     std::vector<WindowInfo> windows;
 
@@ -47,7 +55,6 @@ std::vector<WindowInfo> WindowEnumerator::enumerate() {
         auto nameRef = static_cast<CFStringRef>(
             CFDictionaryGetValue(dict, kCGWindowName));
         std::string title = cfStringToStdString(nameRef);
-        if (title.empty()) continue;  // 跳过无标题窗口
 
         // 获取窗口层级 — 只保留普通窗口（layer == 0）
         int layer = 0;
@@ -62,6 +69,13 @@ std::vector<WindowInfo> WindowEnumerator::enumerate() {
         auto ownerRef = static_cast<CFStringRef>(
             CFDictionaryGetValue(dict, kCGWindowOwnerName));
         std::string ownerName = cfStringToStdString(ownerRef);
+
+        // macOS 15+ 没有屏幕录制权限时 kCGWindowName 为空，
+        // 用应用名称作为后备显示名
+        if (title.empty()) {
+            if (ownerName.empty()) continue;
+            title = ownerName;
+        }
 
         WindowInfo info;
         info.handle   = static_cast<NativeWindowHandle>(wid);

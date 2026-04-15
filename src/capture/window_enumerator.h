@@ -38,6 +38,13 @@ public:
     /// 返回当前所有有效的可见主窗口列表
     static std::vector<WindowInfo> enumerate();
 
+#ifdef __APPLE__
+    /// 检查是否已获得屏幕录制权限
+    static bool hasScreenCapturePermission();
+    /// 请求屏幕录制权限（触发系统弹窗）
+    static void requestScreenCapturePermission();
+#endif
+
 #ifdef _WIN32
 private:
     static BOOL CALLBACK enumCallback(HWND hwnd, LPARAM lParam);

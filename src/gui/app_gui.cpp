@@ -226,9 +226,33 @@ void AppGui::renderWindowSelector() {
 
         // 窗口列表（可滚动）
         ImGui::BeginChild("WindowList", ImVec2(0, -30), true);
+        if (windowList_.empty()) {
+#ifdef __APPLE__
+            if (!WindowEnumerator::hasScreenCapturePermission()) {
+                ImGui::TextWrapped(
+                    "No windows found. Screen recording permission is required.\n\n"
+                    "Please grant permission in:\n"
+                    "System Settings > Privacy & Security > Screen Recording");
+                ImGui::Spacing();
+                if (ImGui::Button("Request Permission")) {
+                    WindowEnumerator::requestScreenCapturePermission();
+                }
+            } else {
+                ImGui::TextWrapped("No windows found. Try clicking Refresh.");
+            }
+#else
+            ImGui::TextWrapped("No windows found. Try clicking Refresh.");
+#endif
+        }
         for (size_t i = 0; i < windowList_.size(); i++) {
-            const std::string& label = windowList_[i].title;
-            // 添加序号防止 ImGui ID 冲突
+            // 显示 "应用名 — 窗口标题" 方便辨别
+            std::string label;
+            if (!windowList_[i].appName.empty() &&
+                windowList_[i].appName != windowList_[i].title) {
+                label = windowList_[i].appName + " — " + windowList_[i].title;
+            } else {
+                label = windowList_[i].title;
+            }
             char id[512];
             snprintf(id, sizeof(id), "%s##%zu", label.c_str(), i);
 

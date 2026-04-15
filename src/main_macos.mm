@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <memory>
 
+#include <CoreGraphics/CoreGraphics.h>
+
 // GLFW + OpenGL
 #include <GLFW/glfw3.h>
 
@@ -26,6 +28,14 @@ static void glfwErrorCallback(int error, const char* description) {
 }
 
 int main(int /*argc*/, char** /*argv*/) {
+    // ── 请求屏幕录制权限（macOS 10.15+） ──
+    // CGPreflightScreenCaptureAccess 检查是否已授权
+    // CGRequestScreenCaptureAccess 触发系统授权对话框
+    if (!CGPreflightScreenCaptureAccess()) {
+        CGRequestScreenCaptureAccess();
+        fprintf(stderr, "[INFO] Screen recording permission requested.\n");
+    }
+
     glfwSetErrorCallback(glfwErrorCallback);
 
     if (!glfwInit()) {
