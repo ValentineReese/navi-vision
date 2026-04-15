@@ -49,7 +49,7 @@ void PreviewTexture::update(const uint8_t* bgra_data, int width, int height) {
 }
 
 ImTextureID PreviewTexture::getImTextureID() const {
-    return reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(textureId_));
+    return static_cast<ImTextureID>(textureId_);
 }
 
 bool PreviewTexture::isValid() const {

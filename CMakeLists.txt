@@ -6,6 +6,9 @@ if(APPLE)
     enable_language(OBJCXX)
     set(CMAKE_OBJCXX_STANDARD 20)
     set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    # 设置部署目标以兼容 CGWindowListCreateImage 等旧 API
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "" FORCE)
+    add_compile_definitions(GL_SILENCE_DEPRECATION)
 endif()
 
 # NaviVision 自身使用 C++20，llama.cpp 构建时使用 C++17 避免 char8_t 问题
@@ -20,8 +23,54 @@ endif()
 # ============================================================
 # 第三方库
 # ============================================================
-# Dear ImGui（通过 vcpkg 安装，macOS 上通过 Homebrew/vcpkg 安装）
-find_package(imgui CONFIG REQUIRED)
+
+# Dear ImGui — 优先使用 vcpkg，否则通过 FetchContent 拉取源码构建
+find_package(imgui CONFIG QUIET)
+if(NOT imgui_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.91.8
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(imgui)
+
+    # 核心源文件
+    set(IMGUI_SOURCES
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    )
+
+    # 平台后端源文件
+    if(WIN32)
+        list(APPEND IMGUI_SOURCES
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+        )
+    elseif(APPLE)
+        list(APPEND IMGUI_SOURCES
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+        )
+    endif()
+
+    add_library(imgui_lib STATIC ${IMGUI_SOURCES})
+    target_include_directories(imgui_lib PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+    )
+
+    if(APPLE)
+        target_link_libraries(imgui_lib PUBLIC glfw)
+    endif()
+
+    # 创建别名以匹配 vcpkg 的 imgui::imgui 目标
+    add_library(imgui::imgui ALIAS imgui_lib)
+endif()
 
 # llama.cpp — 作为子目录引入，提供 LLM + 多模态推理
 # 关闭不需要的选项以加速构建
@@ -30,6 +79,11 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)
+
+# macOS 26 SDK 与当前 llama.cpp Metal 后端存在兼容性问题，暂时禁用
+if(APPLE)
+    set(GGML_METAL OFF CACHE BOOL "" FORCE)
+endif()
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/../llama.cpp ${CMAKE_BINARY_DIR}/llama.cpp)
 

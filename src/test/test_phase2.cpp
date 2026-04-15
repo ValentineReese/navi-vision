@@ -126,45 +126,23 @@ static DesktopSnapshot captureDesktop() {
 }
 
 #elif defined(__APPLE__)
-// ── macOS: CGWindowListCreateImage ──
+// ── macOS: 生成测试用合成图像（CGWindowListCreateImage 在 macOS 15+ 已移除） ──
 static DesktopSnapshot captureDesktop() {
     DesktopSnapshot snap;
 
-    CGImageRef image = CGWindowListCreateImage(
-        CGRectInfinite,
-        kCGWindowListOptionOnScreenOnly,
-        kCGNullWindowID,
-        kCGWindowImageDefault);
-
-    if (!image) return snap;
-
-    snap.width  = static_cast<int>(CGImageGetWidth(image));
-    snap.height = static_cast<int>(CGImageGetHeight(image));
-
-    // 创建 BGRA 上下文
-    size_t bgraRowBytes = snap.width * 4;
-    std::vector<uint8_t> bgra(bgraRowBytes * snap.height);
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(
-        bgra.data(), snap.width, snap.height, 8, bgraRowBytes,
-        colorSpace,
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-
-    if (ctx) {
-        CGContextDrawImage(ctx, CGRectMake(0, 0, snap.width, snap.height), image);
-        CGContextRelease(ctx);
-
-        // BGRA → BGR
-        snap.pixels.resize(static_cast<size_t>(snap.width) * snap.height * 3);
-        for (int i = 0; i < snap.width * snap.height; i++) {
-            snap.pixels[i * 3 + 0] = bgra[i * 4 + 0]; // B
-            snap.pixels[i * 3 + 1] = bgra[i * 4 + 1]; // G
-            snap.pixels[i * 3 + 2] = bgra[i * 4 + 2]; // R
+    // 生成一张 64x64 的合成测试图像（纯色渐变）
+    snap.width  = 64;
+    snap.height = 64;
+    snap.pixels.resize(static_cast<size_t>(snap.width) * snap.height * 3);
+    for (int y = 0; y < snap.height; y++) {
+        for (int x = 0; x < snap.width; x++) {
+            size_t idx = (static_cast<size_t>(y) * snap.width + x) * 3;
+            snap.pixels[idx + 0] = static_cast<uint8_t>(x * 4); // B
+            snap.pixels[idx + 1] = static_cast<uint8_t>(y * 4); // G
+            snap.pixels[idx + 2] = 128;                          // R
         }
     }
 
-    CGColorSpaceRelease(colorSpace);
-    CGImageRelease(image);
     return snap;
 }
 #endif
