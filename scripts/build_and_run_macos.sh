@@ -12,7 +12,7 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build_macos"
 
 echo "========================================="
@@ -55,9 +55,7 @@ if [ -f "$BUILD_DIR/NaviVisionTest" ]; then
     "$BUILD_DIR/NaviVisionTest"
 fi
 
-# ── 启动（可选，传入 --run 参数） ──
-if [ "$1" = "--run" ]; then
-    echo ""
-    echo "[INFO] Launching NaviVision..."
-    "$BUILD_DIR/NaviVision" &
-fi
+# ── 启动 ──
+echo ""
+echo "[INFO] Launching NaviVision..."
+"$BUILD_DIR/NaviVision"
