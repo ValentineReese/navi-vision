@@ -7,6 +7,8 @@
 
 #include <cstdio>
 #include <memory>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include <CoreGraphics/CoreGraphics.h>
 
@@ -28,6 +30,15 @@ static void glfwErrorCallback(int error, const char* description) {
 }
 
 int main(int /*argc*/, char** /*argv*/) {
+    // ── 单实例检查 ──
+    const char* lockPath = "/tmp/navivision.lock";
+    int lockFd = open(lockPath, O_CREAT | O_RDWR, 0600);
+    if (lockFd == -1 || flock(lockFd, LOCK_EX | LOCK_NB) == -1) {
+        fprintf(stderr, "[ERROR] NaviVision is already running.\n");
+        if (lockFd != -1) close(lockFd);
+        return 1;
+    }
+
     // ── 请求屏幕录制权限（macOS 10.15+） ──
     // CGPreflightScreenCaptureAccess 检查是否已授权
     // CGRequestScreenCaptureAccess 触发系统授权对话框
@@ -144,6 +155,11 @@ int main(int /*argc*/, char** /*argv*/) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    // 释放单实例锁
+    flock(lockFd, LOCK_UN);
+    close(lockFd);
+    unlink(lockPath);
 
     return 0;
 }

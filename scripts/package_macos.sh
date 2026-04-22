@@ -115,6 +115,46 @@ for dylib in "$FRAMEWORKS/"*.dylib; do
     install_name_tool -add_rpath @loader_path "$dylib" 2>/dev/null || true
 done
 
+# ── 收集并嵌入所有非系统 dylib（如 Homebrew 安装的 glfw 等） ──
+echo "[INFO] Embedding external dependencies..."
+# 扫描主二进制和已打包 dylib 中引用的非系统绝对路径库
+collect_external_deps() {
+    otool -L "$1" 2>/dev/null | awk 'NR>1{print $1}' | \
+        grep -v '^@rpath\|^@executable_path\|^@loader_path\|^/usr/lib\|^/System'
+}
+
+# 处理主二进制
+for dep in $(collect_external_deps "$MACOS/NaviVision"); do
+    if [ -f "$dep" ]; then
+        depname=$(basename "$dep")
+        if [ ! -f "$FRAMEWORKS/$depname" ]; then
+            echo "[COPY] $depname (from $dep)"
+            cp "$dep" "$FRAMEWORKS/"
+            chmod 644 "$FRAMEWORKS/$depname"
+        fi
+        # 重写引用路径：绝对路径 → @executable_path/../Frameworks/
+        install_name_tool -change "$dep" "@executable_path/../Frameworks/$depname" "$MACOS/NaviVision"
+    else
+        echo "[WARN] External dependency not found: $dep"
+    fi
+done
+
+# 处理 Frameworks 中每个 dylib 的外部依赖
+for dylib in "$FRAMEWORKS/"*.dylib; do
+    [ -L "$dylib" ] && continue
+    for dep in $(collect_external_deps "$dylib"); do
+        if [ -f "$dep" ]; then
+            depname=$(basename "$dep")
+            if [ ! -f "$FRAMEWORKS/$depname" ]; then
+                echo "[COPY] $depname (from $dep)"
+                cp "$dep" "$FRAMEWORKS/"
+                chmod 644 "$FRAMEWORKS/$depname"
+            fi
+            install_name_tool -change "$dep" "@loader_path/$depname" "$dylib"
+        fi
+    done
+done
+
 # ── 复制 Resources ──
 if [ -d "$PROJECT_DIR/profiles" ]; then
     echo "[COPY] profiles/"

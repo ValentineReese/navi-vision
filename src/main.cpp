@@ -57,6 +57,14 @@ ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
 //  WinMain 入口
 // ============================================================
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+    // ── 单实例检查 ──
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Global\\NaviVision_SingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxW(nullptr, L"NaviVision is already running.", L"NaviVision", MB_ICONINFORMATION);
+        if (hMutex) CloseHandle(hMutex);
+        return 0;
+    }
+
     // ── 注册窗口类 ──
     WNDCLASSEXW wc    = {};
     wc.cbSize         = sizeof(wc);
@@ -183,6 +191,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     CleanupDeviceD3D();
     DestroyWindow(hwnd);
     UnregisterClassW(wc.lpszClassName, hInstance);
+
+    // 释放单实例互斥锁
+    if (hMutex) {
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
+    }
 
     return 0;
 }
