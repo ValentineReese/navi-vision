@@ -6,6 +6,8 @@
 
 > English version: see [README.md](README.md)
 
+![NaviVision 界面截图](ScreenShot.png)
+
 ---
 
 ## 功能特性
